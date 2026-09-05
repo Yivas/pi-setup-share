@@ -2,7 +2,7 @@
 
 A Pi extension in development for sharing selected setup resources without copying an entire user directory.
 
-**Not installable yet.** The current code validates a draft profile format, projects selected preferences and keybindings, and reads explicitly selected resources. Pure MCP/subagent and package projections are also available. Profile-file writing/import, backups, package installation, and the `/setup-share` assistant are not implemented.
+**Not installable yet.** The current code supports selective profile serialization, configuration previews, and a recoverable file-transaction core, alongside resource and configuration validation. The integrated import flow, package installation/activation, and `/setup-share` assistant are not implemented.
 
 [Try the validator](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -14,6 +14,8 @@ A Pi extension in development for sharing selected setup resources without copyi
 - Project explicitly selected preferences and namespaced keybindings without copying execution settings, trust, telemetry, or host defaults.
 - Read selected text/binary files with bounded reads, link rejection, cancellation, and file-change checks.
 - Project inactive MCP definitions, minimal subagent settings, and pinned package descriptors without connecting or installing.
+- Serialize explicit selections and preview configuration conflicts without filesystem effects.
+- Back up, apply, restore, and recover bounded managed-file transactions with consent and change checks.
 
 Validation does not execute resource content or access the filesystem or network. It does **not** detect every secret, authenticate a sender, or make imported code and prompts trustworthy. Use synthetic data for development; do not submit real profiles or configuration in issues or pull requests.
 
@@ -53,7 +55,7 @@ This synthetic example contains a prompt as data, not an instruction to execute:
 
 Resource kinds are `extension`, `skill`, `prompt`, `theme`, and `agent`. They identify separate destination namespaces; they do not authorize loading anything. Content uses lossless `utf8` or canonical padded `base64`. The format is under development and may change before the first release.
 
-Limits: 16 MiB serialized JSON, nesting depth 8, 256 resources, 1 MiB decoded per resource, and 8 MiB decoded total. Paths must be relative and NFC-normalized, at most 240 UTF-8 bytes overall and 100 per segment. Leading/trailing dots or spaces, Windows device names, control characters, traversal, and case-folded file/directory collisions are rejected. These lexical checks are not filesystem containment or symlink protection; there is no file writer yet.
+Limits: 16 MiB serialized JSON, nesting depth 8, 256 resources, 1 MiB decoded per resource, and 8 MiB decoded total. Paths must be relative and NFC-normalized, at most 240 UTF-8 bytes overall and 100 per segment. Leading/trailing dots or spaces, Windows device names, control characters, traversal, and case-folded file/directory collisions are rejected. These lexical checks are not filesystem containment or symlink protection; filesystem operations apply separate checks.
 
 Optional `preferences` and `keybindings` fields are accepted. [`projectPreferences(selected)`](src/preferences.ts) and [`projectKeybindings(selected)`](src/keybindings.ts) copy supported selections and return diagnostics for omissions; they do not discover or read your configuration. Strict profile validation rejects unsupported fields instead of silently dropping them. Unknown names and values are not included in diagnostics. Invalid record shapes fail validation.
 
@@ -70,6 +72,16 @@ Optional `integrations` accepts `mcpServers` and `subagents`. Projection contrac
 MCP environment requirements contain names only. Environment values, headers, OAuth configuration, credential commands, sockets, working directories, debugging, and other unlisted fields are not transferred. Arguments are bounded and checked for recognizable absolute/home paths (direct or common-option forms), URLs, and obvious secret-related text. These heuristics cannot prove portability or find paths/secrets inside arbitrary argument languages or resource content; review both before sharing or executing. Missing authentication must be configured locally before activation. Subagent projections include only `defaultModel`, `defaultThinking`, `disableThinking`, and `disableBuiltins`, not overrides, extension paths, schedules, or operational state.
 
 Optional `packages` contains [pinned descriptors](src/packages.ts): exact npm SemVer versions or HTTPS Git URLs with a full 40-hex commit. Floating versions, branches, local paths, and credentials are rejected. Pins do not authenticate content or establish redistribution rights. Basic relative filters support `*`, `?`, and leading `!`, `+`, or `-`; complex brace, character-class, and extglob expansions are excluded. Missing filters and `[]` remain distinct. `autoload: false` is a resource filter, **not** an installation barrier or sandbox. Installing packages can run third-party scripts and will require separate consent from activating resources.
+
+## Export and transaction core
+
+[`exportProfile(selection)`](src/export.ts) composes explicit selections and returns a copied profile, bounded JSON text, and omission diagnostics. It does not discover configuration or write the resulting file. Optional `entrypoints` maps resource kinds to selected UTF-8 paths. Support files are never inferred as entrypoints; declaring an entrypoint does not load or activate it.
+
+[`previewConfiguration(profile, target, decisions)`](src/preview.ts) is pure: it preserves existing values by default and requires explicit overwrite decisions for conflicts. Each decision is evaluated against the original target. MCP environment placeholders remain unresolved and imported servers remain disabled. The returned configuration can contain preserved local data: do not export it or send it to a model, log, or external service. Only the item metadata is intended for a review summary.
+
+[`FileStore`](src/storage.ts) and the [transaction core](src/transaction.ts) are low-level APIs for trusted callers, not a complete import workflow. They use bounded snapshots, link rejection, exclusive temporary files, file synchronization, and change checks before replacement. Transactions restrict destinations, require literal consent, retain local backups, and hold an exclusive lock. Interrupted recovery blocks new transactions until explicitly resolved. Restoring an ordered transaction chain keeps one recovery gate until every step finishes and refuses to overwrite unrelated later edits.
+
+Recovery covers managed file contents, not original permissions or other metadata, installed packages, or side effects of scripts. It addresses process interruptions and ordinary I/O failures; it does not promise power-loss durability or protection against a hostile local process. Backups can contain local configuration and must stay private. Removing a stale lock requires separate explicit confirmation, never an automatic timeout.
 
 ## Participation and rights
 

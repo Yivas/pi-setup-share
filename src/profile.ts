@@ -19,6 +19,7 @@ export const PROFILE_LIMITS = Object.freeze({
 const RESOURCE_KINDS = ['extension', 'skill', 'prompt', 'theme', 'agent'] as const;
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 export type ResourceEncoding = 'utf8' | 'base64';
+export type ResourceEntrypoints = Partial<Record<ResourceKind, string[]>>;
 
 export interface ProfileResource {
   kind: ResourceKind;
@@ -35,6 +36,7 @@ export interface ResourceProfile {
   keybindings?: PortableKeybindings;
   integrations?: PortableIntegrations;
   packages?: PortablePackage[];
+  entrypoints?: ResourceEntrypoints;
 }
 
 function portablePath(value: unknown, field: string): asserts value is string {
@@ -74,8 +76,32 @@ function contentBytes(resource: ProfileResource, field: string): number {
   return decoded.length;
 }
 
+function validateEntrypoints(value: unknown, resources: ProfileResource[]): ResourceEntrypoints {
+  requireRecord(value, [], 'entrypoints', RESOURCE_KINDS);
+  const result: ResourceEntrypoints = {};
+  for (const kind of RESOURCE_KINDS) {
+    if (!Object.hasOwn(value, kind)) continue;
+    const field = `entrypoints.${kind}`;
+    const entries = value[kind];
+    requireDataArray(entries, PROFILE_LIMITS.resources, field);
+    const seen = new Set<string>();
+    result[kind] = entries.map(path => {
+      portablePath(path, field);
+      const resource = resources.find(entry => entry.kind === kind && entry.path === path);
+      const supported = kind === 'extension' ? /\.(?:ts|js)$/.test(path)
+        : kind === 'theme' ? path.endsWith('.json')
+        : kind === 'skill' ? /(?:^|\/)SKILL\.md$/.test(path)
+        : path.endsWith('.md') && !path.endsWith('.chain.md');
+      if (!resource || resource.encoding !== 'utf8' || !supported || seen.has(path)) throw new ProfileError('invalid-content', field);
+      seen.add(path);
+      return path;
+    });
+  }
+  return result;
+}
+
 export function validateProfile(value: unknown): ResourceProfile {
-  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings', 'integrations', 'packages']);
+  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings', 'integrations', 'packages', 'entrypoints']);
   if (value.format !== 'pi-setup-share') throw new ProfileError('invalid-shape', 'format');
   if (value.version !== 1) throw new ProfileError('unsupported-version', 'version');
   requireDataArray(value.resources, PROFILE_LIMITS.resources, 'resources');
@@ -118,6 +144,7 @@ export function validateProfile(value: unknown): ResourceProfile {
   if (Object.hasOwn(value, 'keybindings')) profile.keybindings = validateKeybindings(value.keybindings);
   if (Object.hasOwn(value, 'integrations')) profile.integrations = validateIntegrations(value.integrations);
   if (Object.hasOwn(value, 'packages')) profile.packages = validatePackages(value.packages);
+  if (Object.hasOwn(value, 'entrypoints')) profile.entrypoints = validateEntrypoints(value.entrypoints, resources);
   return profile;
 }
 
