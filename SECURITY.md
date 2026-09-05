@@ -10,7 +10,11 @@ Include the commit, Node.js version, operating system, a minimal synthetic repro
 
 ## Current boundaries
 
-The implemented validator processes resource data without loading it, installing packages, or writing files. It checks format and lexical paths, not filesystem containment, signatures, secret absence, or whether resource code and prompts are trustworthy. The resource format is still a development draft. No setup importer, backup, or sandbox is available yet.
+The core exports selected resources, stages imports, backs up and restores managed files, and separately installs and activates packages. The command interface is not available yet. Validation itself performs no filesystem or network actions. It checks format and lexical paths, not signatures, secret absence, or whether resource code and prompts are trustworthy. The format remains a development draft.
+
+Installation is separate code-execution consent. A per-import directory is not a sandbox: package managers and third-party scripts retain your permissions. Installed files and external script effects are outside rollback. Activation requires another confirmation and may affect consumers before a reload.
+
+Filesystem checks and journals address ordinary changes and interrupted operations, not hostile-process races or power-loss durability. Backups can contain local configuration and must remain private. Journal hashes detect inconsistent managed contents; they do not authenticate an untrusted profile or defend against someone rewriting the whole local store.
 
 Never treat a successful validation as permission to execute content. Do not use the current prototype to move a real setup.
 

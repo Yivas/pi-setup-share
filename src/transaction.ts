@@ -100,11 +100,12 @@ function decodeJournal(bytes: Buffer | null, id: string): Journal {
 }
 
 // A mutable manifest is not authoritative about which transactions are still applied.
-export async function appliedTransactionsFor(store: FileStore, path: string): Promise<string[]> {
+export async function appliedTransactionsFor(store: FileStore, path: string, expected?: { id: string; hash: string | null }): Promise<string[]> {
   validatePaths([path]);
   if ((await store.read(ownerPath, 1024)).bytes?.toString('utf8') !== ownerText) throw new StorageError('invalid-state');
   if ((await store.read(pendingPath, pendingLimit)).bytes !== null) throw new StorageError('recovery-required');
   const ids: string[] = [];
+  let expectedMatches = expected === undefined;
   let entries = 0;
   let bytes = 0;
   try {
@@ -120,8 +121,13 @@ export async function appliedTransactionsFor(store: FileStore, path: string): Pr
       bytes += snapshot.bytes?.byteLength ?? 0;
       if (bytes > journalLimit) throw new StorageError('limit-exceeded');
       const journal = decodeJournal(snapshot.bytes, id);
-      if (journal.state === 'applied' && journal.entries.some(change => change.path === path)) ids.push(id);
+      const change = journal.entries.find(entry => entry.path === path);
+      if (journal.state === 'applied' && change) {
+        ids.push(id);
+        if (expected?.id === id && expected.hash === change.afterHash) expectedMatches = true;
+      }
     }
+    if (!expectedMatches) throw new StorageError('changed');
     return ids;
   } catch (error) {
     if (error instanceof StorageError) throw error;

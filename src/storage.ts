@@ -3,7 +3,7 @@ import { constants, type BigIntStats } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
-export type StorageErrorCode = 'unavailable' | 'unsafe-path' | 'changed' | 'limit-exceeded' | 'busy' | 'invalid-state' | 'recovery-required' | 'consent-required' | 'aborted';
+export type StorageErrorCode = 'unavailable' | 'unsafe-path' | 'changed' | 'limit-exceeded' | 'busy' | 'invalid-state' | 'recovery-required' | 'consent-required' | 'aborted' | 'installation-abandoned';
 export class StorageError extends Error {
   readonly code: StorageErrorCode;
   constructor(code: StorageErrorCode) {

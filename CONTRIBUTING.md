@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports, focused proposals, documentation improvements, and pull requests are welcome. The project is still a resource-format prototype, not an installable Pi extension.
+Bug reports, focused proposals, documentation improvements, and pull requests are welcome. The project is under development, not yet an installable Pi extension.
 
 For a bug, use the [bug report form](https://github.com/Yivas/pi-setup-share/issues/new?template=bug.yml). Include a commit, Node.js version, operating system, expected and observed behavior, and the smallest synthetic reproduction. For a proposal, use the [proposal form](https://github.com/Yivas/pi-setup-share/issues/new?template=proposal.yml) and explain the task it would enable.
 
@@ -14,6 +14,10 @@ Use Node.js 22.19.0 or newer and npm:
 npm ci --ignore-scripts
 npm run check
 ```
+
+The development SDK is pinned to Pi 0.85.0. TypeScript checks project code and its use of SDK signatures, but `skipLibCheck` excludes dependency declaration internals: this Pi release has incompatible generated JSON imports and an unconditional type reference to an optional MCP peer. Do not add unused dependencies or edit upstream files to hide those defects.
+
+The adapter test loads through Pi's declared CLI and native extension loader in a disposable environment, with startup networking disabled and no model calls. Direct Node import of Pi 0.85.0's SDK fails because its unbundled entrypoint refers to an undeclared server package; this extension does not use that entrypoint outside the native host. Recheck both declaration and native-loading behavior when updating the development SDK.
 
 Add a positive test and a relevant rejection or failure test when changing validation. Test data must be synthetic. Do not add runtime dependencies without explaining why the platform or an existing implementation is insufficient.
 
