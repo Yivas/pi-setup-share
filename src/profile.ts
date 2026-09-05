@@ -1,4 +1,6 @@
 import { Buffer } from 'node:buffer';
+import { validateIntegrations, type PortableIntegrations } from './integrations.ts';
+import { validatePackages, type PortablePackage } from './packages.ts';
 import { validatePreferences, type PortablePreferences } from './preferences.ts';
 import { validateKeybindings, type PortableKeybindings } from './keybindings.ts';
 import { ProfileError, requireRecord, requireDataArray } from './validation.ts';
@@ -31,6 +33,8 @@ export interface ResourceProfile {
   resources: ProfileResource[];
   preferences?: PortablePreferences;
   keybindings?: PortableKeybindings;
+  integrations?: PortableIntegrations;
+  packages?: PortablePackage[];
 }
 
 function portablePath(value: unknown, field: string): asserts value is string {
@@ -71,7 +75,7 @@ function contentBytes(resource: ProfileResource, field: string): number {
 }
 
 export function validateProfile(value: unknown): ResourceProfile {
-  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings']);
+  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings', 'integrations', 'packages']);
   if (value.format !== 'pi-setup-share') throw new ProfileError('invalid-shape', 'format');
   if (value.version !== 1) throw new ProfileError('unsupported-version', 'version');
   requireDataArray(value.resources, PROFILE_LIMITS.resources, 'resources');
@@ -112,6 +116,8 @@ export function validateProfile(value: unknown): ResourceProfile {
   const profile: ResourceProfile = { format: 'pi-setup-share', version: 1, resources };
   if (Object.hasOwn(value, 'preferences')) profile.preferences = validatePreferences(value.preferences);
   if (Object.hasOwn(value, 'keybindings')) profile.keybindings = validateKeybindings(value.keybindings);
+  if (Object.hasOwn(value, 'integrations')) profile.integrations = validateIntegrations(value.integrations);
+  if (Object.hasOwn(value, 'packages')) profile.packages = validatePackages(value.packages);
   return profile;
 }
 

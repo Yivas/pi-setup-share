@@ -2,7 +2,7 @@
 
 A Pi extension in development for sharing selected setup resources without copying an entire user directory.
 
-**Not installable yet.** The current code validates a draft profile format, projects selected preferences and keybindings, and reads explicitly selected resources. Profile-file writing/import, MCP/subagent configuration adapters, backups, and the `/setup-share` assistant are not implemented.
+**Not installable yet.** The current code validates a draft profile format, projects selected preferences and keybindings, and reads explicitly selected resources. Pure MCP/subagent and package projections are also available. Profile-file writing/import, backups, package installation, and the `/setup-share` assistant are not implemented.
 
 [Try the validator](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -13,6 +13,7 @@ A Pi extension in development for sharing selected setup resources without copyi
 - Bound JSON size, nesting, resource count, and decoded content size.
 - Project explicitly selected preferences and namespaced keybindings without copying execution settings, trust, telemetry, or host defaults.
 - Read selected text/binary files with bounded reads, link rejection, cancellation, and file-change checks.
+- Project inactive MCP definitions, minimal subagent settings, and pinned package descriptors without connecting or installing.
 
 Validation does not execute resource content or access the filesystem or network. It does **not** detect every secret, authenticate a sender, or make imported code and prompts trustworthy. Use synthetic data for development; do not submit real profiles or configuration in issues or pull requests.
 
@@ -63,6 +64,12 @@ Keybindings use Pi 0.85.0 namespaced built-in action IDs. Missing bindings prese
 [`exportResources(root, selection, signal?)`](src/files.ts) reads only explicitly listed `{kind, path}` entries beneath an absolute root chosen by the caller; it does not scan folders or write a profile. It rejects symlink/junction descendants, linked roots, hardlinked files, and known operational filenames such as `auth.json`, `settings.json`, and `trust.json`. Session/history/log directories, `node_modules`, `.log`, and `.jsonl` files are excluded. Structured configuration must go through its dedicated projection rather than a resource copy. These filename exclusions cannot detect secrets in arbitrary resource content.
 
 Reads check identity, size, and timestamps before and after, and enforce both decoded and serialized size limits. The root is canonicalized, so OS-managed ancestor aliases can resolve normally. This is not an atomic snapshot or protection against a hostile process racing filesystem changes or a filesystem providing unreliable metadata. Filesystem errors expose a code and selection index, not local paths. The operation fails rather than returning an incomplete selection.
+
+Optional `integrations` accepts `mcpServers` and `subagents`. Projection contracts target `pi-mcp-adapter` 2.26.0 and `pi-subagents` 0.50.0; runtime activation is not implemented yet. The [MCP projection](src/integrations.ts) always emits literal `disabled: true` and `approveTools: true`, regardless of the sender's settings. It accepts executable names without paths or HTTPS URLs without credentials, query parameters, or fragments. IP literals and common local/reserved host suffixes are excluded; this is only a syntax check, not proof of public DNS or endpoint ownership. There are no DNS requests. Review every endpoint before sharing or enabling it.
+
+MCP environment requirements contain names only. Environment values, headers, OAuth configuration, credential commands, sockets, working directories, debugging, and other unlisted fields are not transferred. Arguments are bounded and checked for recognizable absolute/home paths (direct or common-option forms), URLs, and obvious secret-related text. These heuristics cannot prove portability or find paths/secrets inside arbitrary argument languages or resource content; review both before sharing or executing. Missing authentication must be configured locally before activation. Subagent projections include only `defaultModel`, `defaultThinking`, `disableThinking`, and `disableBuiltins`, not overrides, extension paths, schedules, or operational state.
+
+Optional `packages` contains [pinned descriptors](src/packages.ts): exact npm SemVer versions or HTTPS Git URLs with a full 40-hex commit. Floating versions, branches, local paths, and credentials are rejected. Pins do not authenticate content or establish redistribution rights. Basic relative filters support `*`, `?`, and leading `!`, `+`, or `-`; complex brace, character-class, and extglob expansions are excluded. Missing filters and `[]` remain distinct. `autoload: false` is a resource filter, **not** an installation barrier or sandbox. Installing packages can run third-party scripts and will require separate consent from activating resources.
 
 ## Participation and rights
 
