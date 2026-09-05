@@ -7,7 +7,7 @@ import { FileStore, StorageError, type FileSnapshot } from '../src/storage.ts';
 
 async function fixture(run: (root: string, store: FileStore) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'pi-setup-share-store-'));
-  try { await run(root, await FileStore.open(root)); } finally { await rm(root, { recursive: true, force: true }); }
+  try { await run(root, await FileStore.open(root)); } finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 }
 
 test('snapshots absent files without creating directories', async () => {

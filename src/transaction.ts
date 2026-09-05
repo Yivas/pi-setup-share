@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, opendir, readdir, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseBoundedJson, stringifyBounded } from './json.ts';
 import { digest, FileStore, StorageError, type FileSnapshot } from './storage.ts';
@@ -97,6 +97,36 @@ function decodeJournal(bytes: Buffer | null, id: string): Journal {
   });
   validatePaths(entries.map(entry => entry.path));
   return { format: 'pi-setup-share-journal', version: 1, id, state: input.state as Journal['state'], appliedCount: input.appliedCount, entries };
+}
+
+// A mutable manifest is not authoritative about which transactions are still applied.
+export async function appliedTransactionsFor(store: FileStore, path: string): Promise<string[]> {
+  validatePaths([path]);
+  if ((await store.read(ownerPath, 1024)).bytes?.toString('utf8') !== ownerText) throw new StorageError('invalid-state');
+  if ((await store.read(pendingPath, pendingLimit)).bytes !== null) throw new StorageError('recovery-required');
+  const ids: string[] = [];
+  let entries = 0;
+  let bytes = 0;
+  try {
+    const root = join(store.root, 'setup-share', 'backups');
+    const stat = await lstat(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError('unsafe-path');
+    const directory = await opendir(root);
+    for await (const entry of directory) {
+      if (++entries > 4096) throw new StorageError('limit-exceeded');
+      if (!entry.name.endsWith('.json') || !isImportId(entry.name.slice(0, -5))) continue;
+      const id = entry.name.slice(0, -5);
+      const snapshot = await store.read(journalPath(id), journalLimit - bytes);
+      bytes += snapshot.bytes?.byteLength ?? 0;
+      if (bytes > journalLimit) throw new StorageError('limit-exceeded');
+      const journal = decodeJournal(snapshot.bytes, id);
+      if (journal.state === 'applied' && journal.entries.some(change => change.path === path)) ids.push(id);
+    }
+    return ids;
+  } catch (error) {
+    if (error instanceof StorageError) throw error;
+    throw new StorageError('invalid-state');
+  }
 }
 
 async function undo(store: FileStore, journal: Journal, partial: boolean): Promise<void> {

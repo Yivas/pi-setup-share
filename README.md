@@ -2,7 +2,7 @@
 
 A Pi extension in development for sharing selected setup resources without copying an entire user directory.
 
-**Not installable yet.** The current code supports selective profile serialization, configuration previews, and a recoverable file-transaction core, alongside resource and configuration validation. The integrated import flow, package installation/activation, and `/setup-share` assistant are not implemented.
+**Not installable yet.** The core serializes selected profiles, stages imports, previews conflicts, writes configuration/resource references after separate confirmation, and restores managed files. Pi runtime integration, package installation, and the `/setup-share` assistant are not implemented.
 
 [Try the validator](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -80,6 +80,10 @@ Optional `packages` contains [pinned descriptors](src/packages.ts): exact npm Se
 [`previewConfiguration(profile, target, decisions)`](src/preview.ts) is pure: it preserves existing values by default and requires explicit overwrite decisions for conflicts. Each decision is evaluated against the original target. MCP environment placeholders remain unresolved and imported servers remain disabled. The returned configuration can contain preserved local data: do not export it or send it to a model, log, or external service. Only the item metadata is intended for a review summary.
 
 [`FileStore`](src/storage.ts) and the [transaction core](src/transaction.ts) are low-level APIs for trusted callers, not a complete import workflow. They use bounded snapshots, link rejection, exclusive temporary files, file synchronization, and change checks before replacement. Transactions restrict destinations, require literal consent, retain local backups, and hold an exclusive lock. Interrupted recovery blocks new transactions until explicitly resolved. Restoring an ordered transaction chain keeps one recovery gate until every step finishes and refuses to overwrite unrelated later edits.
+
+The [import lifecycle](src/import.ts) builds on those primitives. `previewImport` returns an immutable, single-use plan; `applyImport` stages the profile and resources without writing global configuration. `previewActivation` checks staged contents and previews conflicts; `activateImport` separately confirms the global references and settings. Plans belong to the `FileStore` instance that created them, keep bytes and snapshots private, and require a new preview after an attempted application. Consent rejection or cancellation before application does not consume a plan.
+
+The import manifest and its transaction ID are written together, not in a later history update. Lifecycle operations cross-check the declared history against applied journals, so replaying an older manifest cannot hide an activation. This check permits at most 4,096 backup-directory entries and 32 MiB of journal data per operation; exceeding either limit rejects the operation without changing imported files. `restoreImport` restores activation and staging as one recoverable reverse chain, preserving unrelated later edits. Package descriptors remain deferred: this layer neither installs them nor adds npm/Git sources to global settings. Agent entrypoints use a generated local package; recursive discovery is checked conservatively against the explicit selection, including Markdown added to the managed directory after staging or preview. Unselected discoverable Markdown blocks activation even if it might not parse as an agent.
 
 Recovery covers managed file contents, not original permissions or other metadata, installed packages, or side effects of scripts. It addresses process interruptions and ordinary I/O failures; it does not promise power-loss durability or protection against a hostile local process. Backups can contain local configuration and must stay private. Removing a stale lock requires separate explicit confirmation, never an automatic timeout.
 

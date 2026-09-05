@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { commitChanges, recoverChanges, restoreChanges, restoreChain, type FileChange } from '../src/transaction.ts';
+import { appliedTransactionsFor, commitChanges, recoverChanges, restoreChanges, restoreChain, type FileChange } from '../src/transaction.ts';
 import { FileStore, StorageError, type FileSnapshot } from '../src/storage.ts';
 
 async function fixture(run: (root: string, store: FileStore, changes: FileChange[]) => Promise<void>): Promise<void> {
@@ -16,7 +16,7 @@ async function fixture(run: (root: string, store: FileStore, changes: FileChange
       changes.push({ path, bytes: Buffer.from(`after ${path}`), before: await store.read(path) });
     }
     await run(root, store, changes);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 }
 
 async function assertOriginal(root: string): Promise<void> {
@@ -208,6 +208,40 @@ test('does not take over unowned managed-name directories', async () => {
     await assert.rejects(commitChanges(store, changes, true), { code: 'invalid-state' });
     assert.deepEqual(await readdir(join(root, 'setup-share')), ['user-file.txt']);
     await assertOriginal(root);
+  });
+});
+
+test('applied-history inspection rejects linked backup directories', async () => {
+  await fixture(async (root, store, changes) => {
+    await commitChanges(store, changes, true);
+    const backups = join(root, 'setup-share', 'backups');
+    const actual = join(root, 'actual-backups');
+    await rename(backups, actual);
+    await symlink(actual, backups, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(appliedTransactionsFor(store, 'settings.json'), { code: 'unsafe-path' });
+  });
+});
+
+test('applied-history inspection bounds even unrelated directory entries', async () => {
+  await fixture(async (root, store, changes) => {
+    await commitChanges(store, changes, true);
+    for (let index = 0; index < 4096; index++) await writeFile(join(root, 'setup-share', 'backups', `extra-${index}.txt`), '');
+    await assert.rejects(appliedTransactionsFor(store, 'settings.json'), { code: 'limit-exceeded' });
+  });
+});
+
+test('applied-history inspection caps aggregate journal bytes before the next read', async () => {
+  await fixture(async (root, store, changes) => {
+    const first = await commitChanges(store, changes, true);
+    const second = await commitChanges(store, [{ path: 'settings.json', bytes: Buffer.from('second value'), before: await store.read('settings.json') }], true);
+    assert.ok(first && second);
+    assert.deepEqual(new Set(await appliedTransactionsFor(store, 'settings.json')), new Set([first, second]));
+    for (const id of [first, second]) {
+      const path = join(root, 'setup-share', 'backups', `${id}.json`);
+      const journal = await readFile(path, 'utf8');
+      await writeFile(path, journal + ' '.repeat(16 * 1024 * 1024));
+    }
+    await assert.rejects(appliedTransactionsFor(store, 'settings.json'), { code: 'limit-exceeded' });
   });
 });
 

@@ -8,7 +8,7 @@ import { parseProfile, PROFILE_LIMITS, ProfileError } from '../src/profile.ts';
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'pi-setup-share-'));
-  try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
+  try { await run(root); } finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 }
 
 test('reads only explicit text and binary selections without executing source', async () => {
