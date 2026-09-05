@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a problem with the current development code.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic examples only. Remove real profiles, credentials, personal paths, and private endpoints.
+        For vulnerabilities, use https://github.com/Yivas/pi-setup-share/security/advisories/new instead of this public form.
+  - type: input
+    id: revision
+    attributes:
+      label: Commit
+      description: Which commit did you test? There is no released version yet.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node.js version, and npm version. No personal paths.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Steps and a small synthetic input that demonstrate the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and tested on Node.js 22.19.0 or newer.
+          required: true
+        - label: This report contains no real profiles, secrets, or private data.
+          required: true

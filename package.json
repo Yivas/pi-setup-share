@@ -1,0 +1,21 @@
+{
+  "name": "pi-setup-share",
+  "private": true,
+  "description": "Selective, reviewable Pi setup sharing. Under development; no installable extension yet.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.19.0" },
+  "repository": { "type": "git", "url": "https://github.com/Yivas/pi-setup-share.git" },
+  "homepage": "https://github.com/Yivas/pi-setup-share#readme",
+  "bugs": { "url": "https://github.com/Yivas/pi-setup-share/issues" },
+  "files": ["src/", "LICENSE", "README.md"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3"
+  }
+}

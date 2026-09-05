@@ -1,0 +1,27 @@
+name: Proposal
+description: Discuss a setup-sharing use case or a focused improvement.
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach real setups, credentials, private endpoints, or personal paths. Describe examples with synthetic data.
+  - type: textarea
+    id: task
+    attributes:
+      label: What task would this enable?
+      description: Explain the problem and how you handle it today.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed behavior and limits
+      description: Include relevant privacy, compatibility, and trust constraints.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing proposals and removed private data.
+          required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/Yivas/pi-setup-share/security/advisories/new
+    about: Do not put security-sensitive details in a public issue.

@@ -1,0 +1,27 @@
+# Contributing
+
+Bug reports, focused proposals, documentation improvements, and pull requests are welcome. The project is still a resource-format prototype, not an installable Pi extension.
+
+For a bug, use the [bug report form](https://github.com/Yivas/pi-setup-share/issues/new?template=bug.yml). Include a commit, Node.js version, operating system, expected and observed behavior, and the smallest synthetic reproduction. For a proposal, use the [proposal form](https://github.com/Yivas/pi-setup-share/issues/new?template=proposal.yml) and explain the task it would enable.
+
+Discuss substantial format or behavior changes before implementing them. Search existing issues first. Keep each pull request focused and explain its compatibility and security consequences.
+
+## Local checks
+
+Use Node.js 22.19.0 or newer and npm:
+
+```sh
+npm ci --ignore-scripts
+npm run check
+```
+
+Add a positive test and a relevant rejection or failure test when changing validation. Test data must be synthetic. Do not add runtime dependencies without explaining why the platform or an existing implementation is insufficient.
+
+## Before submitting
+
+- Remove real profiles, configuration, credentials, private endpoints, personal paths, sessions, and logs.
+- State which checks you ran and which platforms you did not test.
+- Update documentation if supported inputs, limits, errors, or behavior change.
+- Confirm that you have the right to contribute any code or material under the repository's MIT license. Do not copy third-party setup resources into fixtures.
+
+Do not report vulnerabilities publicly; use [SECURITY.md](SECURITY.md). Follow the [Code of Conduct](CODE_OF_CONDUCT.md). Reviews are best effort, with no promised response time.
