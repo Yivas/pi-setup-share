@@ -1,10 +1,10 @@
 # pi-setup-share
 
-A Pi extension in development for sharing selected setup resources without copying an entire user directory.
+Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Not installable yet.** The core exports selections, stages imports, installs packages after consent, separately activates configuration/resource references, and restores managed files. The installer adapter loads through native Pi; the `/setup-share` command and interactive end-to-end flows are not implemented.
+**Unreleased development build.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
-[Try the validator](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
+[Use in Pi](#use-in-pi) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
 ## Current functionality
 
@@ -32,6 +32,50 @@ npm run check
 ```
 
 `npm run check` runs TypeScript checking and the Node.js test suite. Node's type stripping alone does not check types. CI is configured for Windows, macOS, and Linux on Node 22.19.0 and 24; see [actual workflow results](https://github.com/Yivas/pi-setup-share/actions/workflows/ci.yml) for verification.
+
+## Use in Pi
+
+Use Pi 0.85.0 with the checked-out source. There is no npm release yet. To load the extension for one interactive session, from the checkout run:
+
+```sh
+pi --no-session --no-context-files --no-extensions -e ./src/index.ts
+```
+
+Then enter `/setup-share`. The command uses Pi's native theme and keyboard controls; it does not require a model request. It is TUI-only, not an RPC or print-mode tool. The tested component sizes are 80×24 and 120×40.
+
+For a disposable first run, set `PI_CODING_AGENT_DIR` to a fresh temporary directory before starting Pi. On macOS/Linux:
+
+```sh
+PI_CODING_AGENT_DIR="$(mktemp -d)" pi --no-session --no-context-files --no-extensions -e ./src/index.ts
+```
+
+On PowerShell:
+
+```powershell
+$previous = $env:PI_CODING_AGENT_DIR
+try {
+    $env:PI_CODING_AGENT_DIR = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+    New-Item -ItemType Directory $env:PI_CODING_AGENT_DIR | Out-Null
+    pi --no-session --no-context-files --no-extensions -e ./src/index.ts
+} finally {
+    $env:PI_CODING_AGENT_DIR = $previous
+}
+```
+
+The temporary directory is retained for inspection. Do not delete it while an operation is running.
+
+- **Export:** choose global categories, then individual items. Everything starts unchecked. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. Resource files require an explicit root, type, relative filename, and optional entrypoint. No directory is copied wholesale. Review the selected values and safe omission reasons before confirming a new output file.
+- **Inspect:** read a chosen JSON profile and show configuration/resource metadata without staging, installing, or loading it. Executable resource contents are not displayed; review those in the original file before trusting them.
+- **Import:** select incoming items, review, then separately confirm staging, installation, and activation. **Later** leaves the import inactive and resumable. If packages are present, installation must finish before this assistant offers activation.
+- **Resume:** choose a saved import by ID, verified phase, resource/package counts, and next action. An incomplete package attempt requires a fresh import; it is never retried or cleaned up automatically.
+- **Restore:** reverse this import's managed file changes without overwriting later edits. Installed files, running code, and script effects remain. Reload or restart Pi afterward.
+- **Recover:** repair interrupted managed changes. Removing a stale lock requires an additional confirmation that the other operation has stopped.
+
+Activation writes global settings and references. Some consumers may react immediately; use `/reload` deliberately when ready to load other resources. The assistant never reloads automatically. Cancellation waits for in-flight work to settle; it does not undo earlier confirmed steps or external script effects.
+
+Profile paths must be absolute, local filesystem paths without shell quoting. Existing outputs are never overwritten, including concurrent exports. Links, nonregular files, known operational paths, and invalid UTF-8 are rejected. An interrupted export can leave a complete or incomplete file; use a new filename to retry. Import discovery bounds directory entries to 4,096 and available manifests to 128; each selected status revalidates its manifest, profile, staged files, and installed paths.
+
+The assistant does not send profiles or target configuration to models, session entries, telemetry, or external services. Package installation is the separately consented network/execution boundary. Terminal content remains subject to any terminal recording or other extensions you have enabled.
 
 ## Draft resource format
 
@@ -81,6 +125,8 @@ Optional `packages` contains [pinned descriptors](src/packages.ts): exact npm Se
 [`previewConfiguration(profile, target, decisions)`](src/preview.ts) is pure: it preserves existing values by default and requires explicit overwrite decisions for conflicts. Each decision is evaluated against the original target. MCP environment placeholders remain unresolved and imported servers remain disabled. The returned configuration can contain preserved local data: do not export it or send it to a model, log, or external service. Only the item metadata is intended for a review summary.
 
 [`FileStore`](src/storage.ts) and the [transaction core](src/transaction.ts) are low-level APIs for trusted callers, not a complete import workflow. They use bounded snapshots, link rejection, exclusive temporary files, file synchronization, and change checks before replacement. Transactions restrict destinations, require literal consent, retain local backups, and hold an exclusive lock. Interrupted recovery blocks new transactions until explicitly resolved. Restoring an ordered transaction chain keeps one recovery gate until every step finishes and refuses to overwrite unrelated later edits.
+
+The [native assistant](src/ui.ts) connects selective [global configuration reads](src/global-selection.ts), [profile-file I/O](src/profile-file.ts), and the lifecycle without passing target configuration to its display layer.
 
 The [import lifecycle](src/import.ts) builds on those primitives. `previewImport` returns an immutable, single-use plan; `applyImport` stages the profile and resources without writing global configuration. `previewActivation` checks staged contents and previews conflicts; `activateImport` separately confirms the global references and settings. Plans belong to the `FileStore` instance that created them, keep bytes and snapshots private, and require a new preview after an attempted application. Consent rejection or cancellation before application does not consume a plan.
 

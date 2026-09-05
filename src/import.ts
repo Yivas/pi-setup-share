@@ -385,6 +385,58 @@ export async function activateImport(store: FileStore, plan: ActivationPlan, con
   await executePlan(store, plan, activationPlans, consent, signal);
   return { importId: plan.importId, state: 'active' };
 }
+export interface ImportStatusSummary {
+  readonly importId: string;
+  readonly state: 'staged' | 'installed' | 'active' | 'installation-abandoned';
+  readonly resources: number;
+  readonly packages: number;
+}
+
+// Discovery returns IDs only. Selection must call inspectImport before offering a lifecycle action.
+export async function listImports(store: FileStore): Promise<readonly string[]> {
+  await checkRecovery(store);
+  if (!await store.hasDirectory('setup-share/imports')) return Object.freeze([]);
+  const ids: string[] = [];
+  let entries = 0;
+  try {
+    const directory = await opendir(join(store.root, 'setup-share/imports'));
+    for await (const entry of directory) {
+      if (++entries > 4096) throw new StorageError('limit-exceeded');
+      if (!isImportId(entry.name)) continue;
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new StorageError('unsafe-path');
+      if ((await store.read(`${basePath(entry.name)}/manifest.json`, manifestLimit)).bytes !== null) {
+        if (ids.length === 128) throw new StorageError('limit-exceeded');
+        ids.push(entry.name);
+      }
+    }
+  } catch (error) {
+    if (error instanceof StorageError) throw error;
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw new StorageError('unavailable');
+  }
+  return Object.freeze(ids.sort());
+}
+
+export async function inspectImport(store: FileStore, importId: string): Promise<ImportStatusSummary> {
+  await checkRecovery(store);
+  const { manifest, profile } = await readImport(store, importId);
+  for (const file of resourceFiles(profile, importId)) {
+    if ((await store.read(file.path, PROFILE_LIMITS.fileBytes)).hash !== digest(file.bytes)) throw new StorageError('changed');
+  }
+  for (const source of manifest.installationReceipt?.packageSources ?? []) await verifyPackageDirectory(store, importId, source);
+  let state: ImportStatusSummary['state'] = manifest.state;
+  if (state === 'staged') {
+    if (manifest.installationReceipt) state = 'installed';
+    else {
+      try { await requireUnusedPackageStore(store, importId); }
+      catch (error) {
+        if (!(error instanceof StorageError) || error.code !== 'installation-abandoned') throw error;
+        state = 'installation-abandoned';
+      }
+    }
+  }
+  return Object.freeze({ importId, state, resources: profile.resources.length, packages: profile.packages?.length ?? 0 });
+}
+
 export async function restoreImport(store: FileStore, importId: string, consent: boolean): Promise<void> {
   checkConsent(consent);
   await checkRecovery(store);

@@ -111,6 +111,22 @@ export class FileStore {
     return actual.hash === expected.hash && actual.signature === expected.signature;
   }
 
+  async hasDirectory(path: string): Promise<boolean> {
+    try {
+      const parts = segments(path);
+      await this.checkRoot();
+      let current = this.root;
+      for (const part of parts) {
+        current = join(current, part);
+        let stat: BigIntStats;
+        try { stat = await lstat(current, { bigint: true }); }
+        catch (error) { if (missing(error)) return false; throw error; }
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError('unsafe-path');
+      }
+      return true;
+    } catch (error) { return safeError(error); }
+  }
+
   async directory(path: string): Promise<void> {
     try {
       const parts = segments(path);
