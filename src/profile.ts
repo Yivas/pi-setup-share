@@ -1,4 +1,8 @@
 import { Buffer } from 'node:buffer';
+import { validatePreferences, type PortablePreferences } from './preferences.ts';
+import { validateKeybindings, type PortableKeybindings } from './keybindings.ts';
+import { ProfileError, requireRecord, requireDataArray } from './validation.ts';
+export { ProfileError, type ProfileErrorCode } from './validation.ts';
 
 export const PROFILE_LIMITS = Object.freeze({
   jsonBytes: 16 * 1024 * 1024,
@@ -25,43 +29,8 @@ export interface ResourceProfile {
   format: 'pi-setup-share';
   version: 1;
   resources: ProfileResource[];
-}
-
-export type ProfileErrorCode =
-  | 'invalid-json' | 'invalid-shape' | 'unsupported-version'
-  | 'limit-exceeded' | 'invalid-path' | 'path-conflict' | 'invalid-content';
-
-export class ProfileError extends Error {
-  readonly code: ProfileErrorCode;
-  readonly field: string;
-
-  constructor(code: ProfileErrorCode, field: string) {
-    // Do not include imported values: callers may display or log this error.
-    super(code);
-    this.name = 'ProfileError';
-    this.code = code;
-    this.field = field;
-  }
-}
-
-function requireRecord(
-  value: unknown, keys: readonly string[], field: string,
-): asserts value is Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ProfileError('invalid-shape', field);
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new ProfileError('invalid-shape', field);
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const missingDataProperty = keys.some(key => {
-    const descriptor = descriptors[key];
-    return !Object.hasOwn(descriptors, key) || descriptor === undefined || !('value' in descriptor);
-  });
-  if (Reflect.ownKeys(value).length !== keys.length || missingDataProperty) {
-    throw new ProfileError('invalid-shape', field);
-  }
+  preferences?: PortablePreferences;
+  keybindings?: PortableKeybindings;
 }
 
 function portablePath(value: unknown, field: string): asserts value is string {
@@ -102,13 +71,10 @@ function contentBytes(resource: ProfileResource, field: string): number {
 }
 
 export function validateProfile(value: unknown): ResourceProfile {
-  requireRecord(value, ['format', 'version', 'resources'], 'profile');
+  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings']);
   if (value.format !== 'pi-setup-share') throw new ProfileError('invalid-shape', 'format');
   if (value.version !== 1) throw new ProfileError('unsupported-version', 'version');
-  if (!Array.isArray(value.resources)) throw new ProfileError('invalid-shape', 'resources');
-  if (value.resources.length > PROFILE_LIMITS.resources) {
-    throw new ProfileError('limit-exceeded', 'resources');
-  }
+  requireDataArray(value.resources, PROFILE_LIMITS.resources, 'resources');
 
   const resources: ProfileResource[] = [];
   const paths = new Map<string, number>();
@@ -143,7 +109,10 @@ export function validateProfile(value: unknown): ResourceProfile {
       }
     }
   }
-  return { format: 'pi-setup-share', version: 1, resources };
+  const profile: ResourceProfile = { format: 'pi-setup-share', version: 1, resources };
+  if (Object.hasOwn(value, 'preferences')) profile.preferences = validatePreferences(value.preferences);
+  if (Object.hasOwn(value, 'keybindings')) profile.keybindings = validateKeybindings(value.keybindings);
+  return profile;
 }
 
 function checkJsonDepth(text: string): void {
