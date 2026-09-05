@@ -2,7 +2,7 @@
 
 A Pi extension in development for sharing selected setup resources without copying an entire user directory.
 
-**Not installable yet.** The current code validates a draft profile format and projects selected preferences and keybindings. File export/import, MCP/subagent configuration adapters, backups, and the `/setup-share` assistant are not implemented.
+**Not installable yet.** The current code validates a draft profile format, projects selected preferences and keybindings, and reads explicitly selected resources. Profile-file writing/import, MCP/subagent configuration adapters, backups, and the `/setup-share` assistant are not implemented.
 
 [Try the validator](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -12,6 +12,7 @@ A Pi extension in development for sharing selected setup resources without copyi
 - Reject unsupported fields, malformed contents, non-portable paths, and conflicting destinations.
 - Bound JSON size, nesting, resource count, and decoded content size.
 - Project explicitly selected preferences and namespaced keybindings without copying execution settings, trust, telemetry, or host defaults.
+- Read selected text/binary files with bounded reads, link rejection, cancellation, and file-change checks.
 
 Validation does not execute resource content or access the filesystem or network. It does **not** detect every secret, authenticate a sender, or make imported code and prompts trustworthy. Use synthetic data for development; do not submit real profiles or configuration in issues or pull requests.
 
@@ -58,6 +59,10 @@ Optional `preferences` and `keybindings` fields are accepted. [`projectPreferenc
 Preferences cover bounded display, thinking, compaction, branch-summary, image, and message-delivery settings. Theme names are limited to `dark` and `light`; model/provider identifiers require explicit review and restricted identifier syntax, not arbitrary text. Token limits are integers from 0 to 1,000,000; these are profile limits, not Pi's own validation guarantees. Code indentation is 0–32 spaces. See the [allowlist](src/preferences.ts) for exact fields and bounds. Shell commands, resource paths, networking, trust, tools, telemetry, and per-model maps are excluded.
 
 Keybindings use Pi 0.85.0 namespaced built-in action IDs. Missing bindings preserve host defaults; `[]` deliberately disables that action's shortcuts. Each action allows at most 16 keys, each at most 64 characters. Duplicate modifier/alias combinations within an action are rejected. Shared keys across actions produce a projection warning because different contexts can legitimately share shortcuts. Terminal support and contextual conflicts still need receiver review; this is not a keyboard-compatibility guarantee. Literal `+` keys and modified F1–F12 keys are unsupported by this draft because Pi 0.85.0 cannot match those bindings. Only the stable `regular` TUI mode is included in preferences.
+
+[`exportResources(root, selection, signal?)`](src/files.ts) reads only explicitly listed `{kind, path}` entries beneath an absolute root chosen by the caller; it does not scan folders or write a profile. It rejects symlink/junction descendants, linked roots, hardlinked files, and known operational filenames such as `auth.json`, `settings.json`, and `trust.json`. Session/history/log directories, `node_modules`, `.log`, and `.jsonl` files are excluded. Structured configuration must go through its dedicated projection rather than a resource copy. These filename exclusions cannot detect secrets in arbitrary resource content.
+
+Reads check identity, size, and timestamps before and after, and enforce both decoded and serialized size limits. The root is canonicalized, so OS-managed ancestor aliases can resolve normally. This is not an atomic snapshot or protection against a hostile process racing filesystem changes or a filesystem providing unreliable metadata. Filesystem errors expose a code and selection index, not local paths. The operation fails rather than returning an incomplete selection.
 
 ## Participation and rights
 
