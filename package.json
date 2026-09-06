@@ -1,8 +1,11 @@
 {
   "name": "pi-setup-share",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.1",
   "description": "Selectively export, inspect, import, and restore Pi setups through a native assistant.",
+  "keywords": ["pi-package", "pi", "setup", "configuration", "sharing"],
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": ["./src/index.ts"]
   },

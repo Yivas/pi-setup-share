@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports, focused proposals, documentation improvements, and pull requests are welcome. The native extension is distributed through GitHub Releases. There is no npm release.
+Bug reports, focused proposals, documentation improvements, and pull requests are welcome. The native extension is distributed through GitHub Releases and the public npm package `pi-setup-share`.
 
 For a bug, use the [bug report form](https://github.com/Yivas/pi-setup-share/issues/new?template=bug.yml). Include a commit, Node.js version, operating system, expected and observed behavior, and the smallest synthetic reproduction. For a proposal, use the [proposal form](https://github.com/Yivas/pi-setup-share/issues/new?template=proposal.yml) and explain the task it would enable.
 

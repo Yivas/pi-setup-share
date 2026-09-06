@@ -2,7 +2,7 @@
 
 Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Version 0.1.0 — initial development release.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
+**Version 0.1.1 — npm distribution release.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
 [Use in Pi](#use-in-pi) · [Changes](CHANGELOG.md) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -22,7 +22,7 @@ Validation does not execute resource content or access the filesystem or network
 
 ## Development
 
-Requires Node.js 22.19.0 or newer and npm. There is no npm release; the profile format remains a development draft.
+Requires Node.js 22.19.0 or newer and npm. The profile format remains a development draft.
 
 ```sh
 git clone https://github.com/Yivas/pi-setup-share.git
@@ -35,13 +35,25 @@ npm run check
 
 ## Use in Pi
 
-Use Pi 0.85.0. Work from a checkout, or extract `pi-setup-share-0.1.0.tgz` from [GitHub Releases](https://github.com/Yivas/pi-setup-share/releases) and enter its `package` directory. There is no npm release. To load the extension for one interactive session, run:
+Use Pi 0.85.0. Install the public npm package globally in Pi:
+
+```sh
+pi install npm:pi-setup-share@0.1.1
+```
+
+Restart Pi, then enter `/setup-share`. To try the package for one interactive session without adding it to global settings, run:
+
+```sh
+pi -e npm:pi-setup-share@0.1.1
+```
+
+You can also work from a checkout or extract the source archive from [GitHub Releases](https://github.com/Yivas/pi-setup-share/releases). From the package directory, load the extension directly with:
 
 ```sh
 pi --no-session --no-context-files --no-extensions -e ./src/index.ts
 ```
 
-Then enter `/setup-share`. The command uses Pi's native theme and keyboard controls; it does not require a model request. It is TUI-only, not an RPC or print-mode tool. The tested component sizes are 80×24 and 120×40.
+The command uses Pi's native theme and keyboard controls; it does not require a model request. It is TUI-only, not an RPC or print-mode tool. The tested component sizes are 80×24 and 120×40.
 
 For a disposable first run, set `PI_CODING_AGENT_DIR` to a fresh temporary directory before starting Pi. On macOS/Linux:
 

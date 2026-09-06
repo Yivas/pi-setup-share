@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 — 2026-09-06
+
+### Changed
+
+- Published the existing native extension as the public `pi-setup-share` npm package.
+- Added Pi package discovery metadata and documented global and temporary npm installation.
+
+There are no functional or profile-format changes from 0.1.0.
+
 ## 0.1.0 — 2026-09-06
 
 First GitHub release. Requires Pi 0.85.0 and Node.js 22.19.0 or newer.
