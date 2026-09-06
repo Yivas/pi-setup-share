@@ -2,7 +2,7 @@
 
 Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Version 0.1.1 — npm distribution release.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
+**Version 0.2.0 — ZIP profiles and portable MCP selection.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
 [Use in Pi](#use-in-pi) · [Changes](CHANGELOG.md) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -38,7 +38,7 @@ npm run check
 Use Pi 0.85.0. Install the public npm package globally in Pi:
 
 ```sh
-pi install npm:pi-setup-share@0.1.1
+pi install npm:pi-setup-share@0.2.0
 ```
 
 Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives containing exactly `profile.json`; inspection and import also accept plain JSON profiles created by 0.1.x.
@@ -46,7 +46,7 @@ Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives con
 To try the package for one interactive session without adding it to global settings, run:
 
 ```sh
-pi -e npm:pi-setup-share@0.1.1
+pi -e npm:pi-setup-share@0.2.0
 ```
 
 You can also work from a checkout or extract the source archive from [GitHub Releases](https://github.com/Yivas/pi-setup-share/releases). From the package directory, load the extension directly with:

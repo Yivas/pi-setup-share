@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-09-06
+
 ### Added
 
 - Export profiles as a standard ZIP containing one `profile.json`, while retaining legacy JSON import.
@@ -10,6 +12,10 @@
 ### Security
 
 - Bound archive size and decompressed profile bytes; reject extra entries, directories, encryption, comments, inconsistent sizes, invalid CRC, and unsupported ZIP structure without extracting files.
+
+### Compatibility
+
+- Upgrade the receiving installation to 0.2.0 before sharing a new ZIP. Existing plain JSON profiles remain importable.
 
 ## 0.1.1 — 2026-09-06
 

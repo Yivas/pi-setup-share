@@ -2,7 +2,8 @@
 
 | Line | Support |
 | --- | --- |
-| 0.1.x | Security reports accepted; fixes target the latest patch |
+| 0.2.x | Security reports accepted; fixes target the latest patch |
+| 0.1.x | Reports accepted; upgrade to the current line when possible |
 | Current default branch | Development reports accepted |
 
 Report suspected vulnerabilities through [GitHub private vulnerability reporting](https://github.com/Yivas/pi-setup-share/security/advisories/new). Do not open a public issue with exploit details or sensitive data.
