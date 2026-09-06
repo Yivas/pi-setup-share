@@ -2,7 +2,8 @@
 
 | Line | Support |
 | --- | --- |
-| Current default branch | Development reports accepted; no released version yet |
+| 0.1.x | Security reports accepted; fixes target the latest patch |
+| Current default branch | Development reports accepted |
 
 Report suspected vulnerabilities through [GitHub private vulnerability reporting](https://github.com/Yivas/pi-setup-share/security/advisories/new). Do not open a public issue with exploit details or sensitive data.
 
@@ -18,6 +19,6 @@ Filesystem checks and journals address ordinary changes and interrupted operatio
 
 The assistant keeps profile data out of model messages, session entries, and its diagnostics. Displayed data can still be recorded by the terminal or observed by other extensions in the same Pi process. Known filename exclusions are not secret detection. Incomplete profile exports and package attempts are retained rather than automatically deleted or reused.
 
-Never treat a successful validation as permission to execute content. Use synthetic profiles and a disposable Pi user directory when evaluating this unreleased build.
+Never treat a successful validation as permission to execute content. Use synthetic profiles and a disposable Pi user directory for your first evaluation.
 
 The maintainer will assess reports and coordinate a correction and disclosure when applicable. No response deadline, reward, CVE assignment, or support agreement is promised. If a credential was exposed, revoke it through its provider rather than including it in a report.

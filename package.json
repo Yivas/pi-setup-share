@@ -1,5 +1,6 @@
 {
   "name": "pi-setup-share",
+  "version": "0.1.0",
   "private": true,
   "description": "Selectively export, inspect, import, and restore Pi setups through a native assistant.",
   "pi": {
@@ -21,7 +22,11 @@
   "files": [
     "src/",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md"
   ],
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",

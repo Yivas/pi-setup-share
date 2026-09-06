@@ -2,9 +2,9 @@
 
 Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Unreleased development build.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
+**Version 0.1.0 — initial development release.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
-[Use in Pi](#use-in-pi) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
+[Use in Pi](#use-in-pi) · [Changes](CHANGELOG.md) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
 ## Current functionality
 
@@ -22,7 +22,7 @@ Validation does not execute resource content or access the filesystem or network
 
 ## Development
 
-Requires Node.js 22.19.0 or newer and npm. There is no published package or stable format contract.
+Requires Node.js 22.19.0 or newer and npm. There is no npm release; the profile format remains a development draft.
 
 ```sh
 git clone https://github.com/Yivas/pi-setup-share.git
@@ -35,7 +35,7 @@ npm run check
 
 ## Use in Pi
 
-Use Pi 0.85.0 with the checked-out source. There is no npm release yet. To load the extension for one interactive session, from the checkout run:
+Use Pi 0.85.0. Work from a checkout, or extract `pi-setup-share-0.1.0.tgz` from [GitHub Releases](https://github.com/Yivas/pi-setup-share/releases) and enter its `package` directory. There is no npm release. To load the extension for one interactive session, run:
 
 ```sh
 pi --no-session --no-context-files --no-extensions -e ./src/index.ts
@@ -98,7 +98,7 @@ This synthetic example contains a prompt as data, not an instruction to execute:
 
 [`parseProfile(text)`](src/profile.ts) bounds the input before JSON parsing, then validates it. `validateProfile(value)` validates an already parsed JSON value and returns copied resource records. Failures are `ProfileError` instances with a machine-readable `code` and `field`; imported values are not included in error messages.
 
-Resource kinds are `extension`, `skill`, `prompt`, `theme`, and `agent`. They identify separate destination namespaces; they do not authorize loading anything. Content uses lossless `utf8` or canonical padded `base64`. The format is under development and may change before the first release.
+Resource kinds are `extension`, `skill`, `prompt`, `theme`, and `agent`. They identify separate destination namespaces; they do not authorize loading anything. Content uses lossless `utf8` or canonical padded `base64`. The format is under development and may change in future releases.
 
 Limits: 16 MiB serialized JSON, nesting depth 8, 256 resources, 1 MiB decoded per resource, and 8 MiB decoded total. Paths must be relative and NFC-normalized, at most 240 UTF-8 bytes overall and 100 per segment. Leading/trailing dots or spaces, Windows device names, control characters, traversal, and case-folded file/directory collisions are rejected. These lexical checks are not filesystem containment or symlink protection; filesystem operations apply separate checks.
 
