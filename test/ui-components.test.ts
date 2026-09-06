@@ -42,6 +42,21 @@ test('selections begin empty, Space toggles and Enter accepts Continue', () => {
   assert.deepEqual(result, ['a']);
 });
 
+test('select-all control marks every visible portable item', () => {
+  let result: string[] | undefined;
+  const component = selectionComponent(tui(24), theme, ids => { result = ids; }, [
+    { value: 'portable-a', label: 'Portable A' }, { value: 'portable-b', label: 'Portable B' },
+  ], 'Select all portable MCP servers');
+  assert.match(component.render(80).join('\n'), /Select all portable MCP servers/);
+  component.handleInput?.('\r');
+  const selected = component.render(80).join('\n');
+  assert.match(selected, /\[x\] Portable A/);
+  assert.match(selected, /\[x\] Portable B/);
+  for (let index = 0; index < 3; index++) component.handleInput?.('\x1b[B');
+  component.handleInput?.('\r');
+  assert.deepEqual(result, ['portable-a', 'portable-b']);
+});
+
 test('Escape discards a pending selection and display removes terminal controls', () => {
   let called = false;
   const component = selectionComponent(tui(24), theme, ids => { called = true; assert.equal(ids, undefined); }, [{ value: 'a', label: 'First' }]);

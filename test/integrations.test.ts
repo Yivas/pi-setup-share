@@ -31,8 +31,10 @@ test('omits nonportable commands, secret-like arguments and unsupported sockets'
   for (const server of [{ command: '/usr/bin/node' }, { command: 'node', args: ['--api-key=synthetic-secret'] }, { command: 'node', args: ['C:\\synthetic\\file'] }, { command: 'node', args: ['--file=/synthetic/file'] }, { command: 'node', args: ['\\\\synthetic\\share'] }, { command: 'node', args: ['https://example.com/?secret=value'] }, { socket: '/synthetic/socket' }]) {
     const projected = projectMcpServers({ example: server });
     assert.deepEqual(projected.value, {});
-    assert.ok(projected.diagnostics.length > 0);
+    assert.deepEqual(projected.diagnostics.find(diagnostic => diagnostic.code === 'unsupported-value'),
+      { field: 'mcpServers[0]', code: 'unsupported-value', label: 'example' });
     assert.equal(JSON.stringify(projected).includes('synthetic-secret'), false);
+    assert.equal(JSON.stringify(projected).includes('synthetic\\file'), false);
   }
 });
 

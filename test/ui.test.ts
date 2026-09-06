@@ -7,6 +7,7 @@ import type { ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-a
 import type { Component, TUI } from '@earendil-works/pi-tui';
 import { inspectImport, listImports, type PackageInstallerFactory } from '../src/import.ts';
 import { en } from '../src/locales/en.ts';
+import { readProfileFile, writeProfileFile } from '../src/profile-file.ts';
 import { FileStore } from '../src/storage.ts';
 import { runSetupShare } from '../src/ui.ts';
 
@@ -56,8 +57,8 @@ async function fixture(run: (root: string, agent: string, store: FileStore) => P
 
 test('inspection is read-only, does not install or expose resource contents', async () => {
   await fixture(async (root, agent, store) => {
-    const source = join(root, 'profile.json');
-    await writeFile(source, JSON.stringify({ ...profile, resources: [{ kind: 'extension', path: 'main.ts', encoding: 'utf8', content: 'SYNTHETIC_CODE_MUST_NOT_EXECUTE' }] }));
+    const source = join(root, 'profile.zip');
+    await writeProfileFile(source, { ...profile, resources: [{ kind: 'extension', path: 'main.ts', encoding: 'utf8', content: 'SYNTHETIC_CODE_MUST_NOT_EXECUTE' }] }, true);
     const ui = context([en.inspect], [source], []);
     await runSetupShare(ui.ctx, agent, noInstall);
     assert.deepEqual(await listImports(store), []);
@@ -115,15 +116,33 @@ test('package Later stays inactive, resumed installation is isolated, and activa
 test('export selects individual global fields and does not leak excluded values', async () => {
   await fixture(async (root, agent) => {
     await writeFile(join(agent, 'settings.json'), JSON.stringify({ quietStartup: true, syntheticPrivate: 'EXCLUDED_SENTINEL' }));
-    const output = join(root, 'export.json');
+    const output = join(root, 'export.zip');
     const ui = context([en.export], [output], [{ count: 5, include: [0] }, { count: 1, include: [0] }, true], [false]);
     await runSetupShare(ui.ctx, agent, noInstall);
-    const exported = await readFile(output, 'utf8');
-    assert.equal(exported.includes('EXCLUDED_SENTINEL'), false);
-    assert.deepEqual(JSON.parse(exported).preferences, { quietStartup: true });
+    const exported = await readProfileFile(output);
+    assert.deepEqual(exported.preferences, { quietStartup: true });
+    assert.equal(JSON.stringify(exported).includes('EXCLUDED_SENTINEL'), false);
     assert.equal(ui.screens.join('').includes('EXCLUDED_SENTINEL'), false);
     assert.match(ui.screens.join(''), /Unsupported field omitted/);
     assert.equal(ui.notifications.join('').includes(root), false);
+  });
+});
+
+test('export explains omitted MCP servers and selects every portable server at once', async () => {
+  await fixture(async (root, agent) => {
+    await writeFile(join(agent, 'mcp.json'), JSON.stringify({ mcpServers: {
+      portable: { command: 'npx', args: ['synthetic-package@1.2.3'] },
+      localOnly: { command: 'node', args: ['C:\\synthetic\\private\\server.js'] },
+    } }));
+    const output = join(root, 'mcp-export.zip');
+    const ui = context([en.export], [output], [
+      { count: 5, include: [2] }, { count: 2, include: [0] }, true,
+    ], [false]);
+    await runSetupShare(ui.ctx, agent, noInstall);
+    const exported = await readProfileFile(output);
+    assert.deepEqual(Object.keys(exported.integrations?.mcpServers ?? {}), ['portable']);
+    assert.match(ui.screens.join('\n'), /localOnly: Not portable/);
+    assert.equal(ui.screens.join('\n').includes('synthetic\\private'), false);
   });
 });
 

@@ -8,7 +8,7 @@ Share selected Pi settings and resources through a native `/setup-share` assista
 
 ## Current functionality
 
-- Validate an explicit, versioned JSON envelope with selected text or binary resources.
+- Validate an explicit, versioned JSON profile inside a one-entry ZIP, while still accepting legacy plain JSON.
 - Reject unsupported fields, malformed contents, non-portable paths, and conflicting destinations.
 - Bound JSON size, nesting, resource count, and decoded content size.
 - Project explicitly selected preferences and namespaced keybindings without copying execution settings, trust, telemetry, or host defaults.
@@ -41,7 +41,9 @@ Use Pi 0.85.0. Install the public npm package globally in Pi:
 pi install npm:pi-setup-share@0.1.1
 ```
 
-Restart Pi, then enter `/setup-share`. To try the package for one interactive session without adding it to global settings, run:
+Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives containing exactly `profile.json`; inspection and import also accept plain JSON profiles created by 0.1.x.
+
+To try the package for one interactive session without adding it to global settings, run:
 
 ```sh
 pi -e npm:pi-setup-share@0.1.1
@@ -76,8 +78,8 @@ try {
 
 The temporary directory is retained for inspection. Do not delete it while an operation is running.
 
-- **Export:** choose global categories, then individual items. Everything starts unchecked. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. Resource files require an explicit root, type, relative filename, and optional entrypoint. No directory is copied wholesale. Review the selected values and safe omission reasons before confirming a new output file.
-- **Inspect:** read a chosen JSON profile and show configuration/resource metadata without staging, installing, or loading it. Executable resource contents are not displayed; review those in the original file before trusting them.
+- **Export:** choose global categories, then individual items. Everything starts unchecked. MCP selection includes **Select all portable MCP servers**; nonportable servers are named locally with a safe reason but are not copied. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. Resource files require an explicit root, type, relative filename, and optional entrypoint. No directory is copied wholesale. Review the selected values and safe omission reasons before confirming a new ZIP.
+- **Inspect:** read a chosen profile ZIP or legacy JSON and show configuration/resource metadata without staging, installing, extracting files, or loading it. Executable resource contents are not displayed; review those in the original file before trusting them.
 - **Import:** select incoming items, review, then separately confirm staging, installation, and activation. **Later** leaves the import inactive and resumable. If packages are present, installation must finish before this assistant offers activation.
 - **Resume:** choose a saved import by ID, verified phase, resource/package counts, and next action. An incomplete package attempt requires a fresh import; it is never retried or cleaned up automatically.
 - **Restore:** reverse this import's managed file changes without overwriting later edits. Installed files, running code, and script effects remain. Reload or restart Pi afterward.
@@ -91,7 +93,7 @@ The assistant does not send profiles or target configuration to models, session 
 
 ## Draft resource format
 
-This synthetic example contains a prompt as data, not an instruction to execute:
+A new export contains one file named `profile.json`. Its JSON structure remains version 1; the ZIP is only a bounded transport container. This synthetic example contains a prompt as data, not an instruction to execute:
 
 ```json
 {
@@ -112,7 +114,7 @@ This synthetic example contains a prompt as data, not an instruction to execute:
 
 Resource kinds are `extension`, `skill`, `prompt`, `theme`, and `agent`. They identify separate destination namespaces; they do not authorize loading anything. Content uses lossless `utf8` or canonical padded `base64`. The format is under development and may change in future releases.
 
-Limits: 16 MiB serialized JSON, nesting depth 8, 256 resources, 1 MiB decoded per resource, and 8 MiB decoded total. Paths must be relative and NFC-normalized, at most 240 UTF-8 bytes overall and 100 per segment. Leading/trailing dots or spaces, Windows device names, control characters, traversal, and case-folded file/directory collisions are rejected. These lexical checks are not filesystem containment or symlink protection; filesystem operations apply separate checks.
+Archive limits: 17 MiB ZIP, exactly one regular entry named `profile.json`, and 16 MiB after decompression. Entries with another name, additional entries, directories, encryption, comments, inconsistent sizes, invalid CRC, or unsupported structure are rejected; nothing is extracted to disk. JSON limits remain 16 MiB serialized JSON, nesting depth 8, 256 resources, 1 MiB decoded per resource, and 8 MiB decoded total. Paths must be relative and NFC-normalized, at most 240 UTF-8 bytes overall and 100 per segment. Leading/trailing dots or spaces, Windows device names, control characters, traversal, and case-folded file/directory collisions are rejected. These lexical checks are not filesystem containment or symlink protection; filesystem operations apply separate checks.
 
 Optional `preferences` and `keybindings` fields are accepted. [`projectPreferences(selected)`](src/preferences.ts) and [`projectKeybindings(selected)`](src/keybindings.ts) copy supported selections and return diagnostics for omissions; they do not discover or read your configuration. Strict profile validation rejects unsupported fields instead of silently dropping them. Unknown names and values are not included in diagnostics. Invalid record shapes fail validation.
 

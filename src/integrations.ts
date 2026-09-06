@@ -92,8 +92,9 @@ export function projectMcpServers(selected: unknown): ProjectionResult<Record<st
   let index = 0;
   for (const [name, input] of Object.entries(selected)) {
     const field = `mcpServers[${index++}]`;
+    let safeLabel: string | undefined;
     try {
-      text(name, /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/, 64, field);
+      safeLabel = text(name, /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/, 64, field);
       requireDataRecord(input, field);
       const candidate: Record<string, unknown> = { disabled: true, approveTools: true };
       let position = 0;
@@ -109,7 +110,9 @@ export function projectMcpServers(selected: unknown): ProjectionResult<Record<st
       value[name] = mcpServer(candidate, field);
     } catch (error) {
       if (!(error instanceof ProfileError)) throw error;
-      diagnostics.push({ field, code: 'unsupported-value' });
+      diagnostics.push(safeLabel === undefined
+        ? { field, code: 'unsupported-value' }
+        : { field, code: 'unsupported-value', label: safeLabel });
     }
   }
   return { value, diagnostics };

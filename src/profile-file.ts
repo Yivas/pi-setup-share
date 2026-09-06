@@ -3,7 +3,8 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { serializeProfile } from './export.ts';
-import { parseProfile, PROFILE_LIMITS, type ResourceProfile } from './profile.ts';
+import { createProfileArchive, isProfileArchive, parseProfileArchive, PROFILE_ARCHIVE_LIMITS } from './profile-archive.ts';
+import { parseProfile, type ResourceProfile } from './profile.ts';
 import { digest, FileStore, StorageError } from './storage.ts';
 
 function checkAbort(signal?: AbortSignal): void {
@@ -23,18 +24,21 @@ export async function readProfileFile(path: string, signal?: AbortSignal): Promi
   checkAbort(signal);
   checkPath(path);
   const store = await FileStore.open(dirname(path));
-  const snapshot = await store.read(basename(path), PROFILE_LIMITS.jsonBytes);
+  const snapshot = await store.read(basename(path), PROFILE_ARCHIVE_LIMITS.archiveBytes);
   checkAbort(signal);
   if (!snapshot.bytes) throw new StorageError('unavailable');
-  if (!isUtf8(snapshot.bytes)) throw new StorageError('invalid-state');
-  return parseProfile(snapshot.bytes.toString('utf8'));
+  const bytes = isProfileArchive(snapshot.bytes) ? await parseProfileArchive(snapshot.bytes, signal) : snapshot.bytes;
+  if (!isUtf8(bytes)) throw new StorageError('invalid-state');
+  checkAbort(signal);
+  return parseProfile(bytes.toString('utf8'));
 }
 
 export async function writeProfileFile(path: string, profile: unknown, consent: boolean, signal?: AbortSignal): Promise<void> {
   if (consent !== true) throw new StorageError('consent-required');
   checkAbort(signal);
   checkPath(path);
-  const bytes = Buffer.from(serializeProfile(profile));
+  const bytes = await createProfileArchive(Buffer.from(serializeProfile(profile)), signal);
+  checkAbort(signal);
   const store = await FileStore.open(dirname(path));
   const name = basename(path);
   // Validate the filename and parent without reading an existing destination's contents.
@@ -50,7 +54,7 @@ export async function writeProfileFile(path: string, profile: unknown, consent: 
     // An interrupted write may leave an incomplete file. Never reuse or delete that path automatically.
     try { checkAbort(signal); await handle.writeFile(bytes); await handle.sync(); }
     finally { await handle.close(); }
-    if ((await store.read(name, PROFILE_LIMITS.jsonBytes)).hash !== digest(bytes)) throw new StorageError('changed');
+    if ((await store.read(name, PROFILE_ARCHIVE_LIMITS.archiveBytes)).hash !== digest(bytes)) throw new StorageError('changed');
     checkAbort(signal);
   } catch (error) {
     if (error instanceof StorageError) throw error;

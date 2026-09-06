@@ -18,6 +18,7 @@ export class ProfileError extends Error {
 export interface ProjectionDiagnostic {
   field: string;
   code: 'omitted-field' | 'unsupported-value' | 'shared-key';
+  label?: string;
 }
 
 export interface ProjectionResult<T> {

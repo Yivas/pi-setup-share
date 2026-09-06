@@ -39,8 +39,9 @@ test('native Pi loads and registers setup-share without factory I/O or model use
           for (const [width, rows] of [[80, 24], [120, 40]]) {
             const tui = { terminal: { rows }, requestRender() {} };
             const review = reviewComponent(tui, ctx.ui.theme, () => {}, ['Synthetic profile', 'Resources: 2', 'Packages: 1', 'preferences.quietStartup: true', 'No resource code is executed during review.']);
-            const selection = selectionComponent(tui, ctx.ui.theme, () => {}, [{ value: '0', label: 'Preferences' }, { value: '1', label: 'Keybindings' }, { value: '2', label: 'MCP servers' }]);
-            renders.push(width + 'x' + rows, ...review.render(width), '', ...selection.render(width));
+            const omission = reviewComponent(tui, ctx.ui.theme, () => {}, [en.omittedMcpTitle, 'localOnly: ' + en.omittedMcpReason]);
+            const selection = selectionComponent(tui, ctx.ui.theme, () => {}, [{ value: '0', label: 'Portable MCP A' }, { value: '1', label: 'Portable MCP B' }], en.selectAllPortableMcp);
+            renders.push(width + 'x' + rows, ...review.render(width), '', ...omission.render(width), '', ...selection.render(width));
             for (const [title, warning] of [[en.stageTitle, en.stageWarning], [en.installTitle, en.installWarning], [en.activateTitle, en.activateWarning], [en.restoreTitle, en.restoreWarning], [en.recoveryTitle, en.recoveryWarning]]) {
               await confirmStep({ ui: { custom: factory => new Promise(resolve => {
                 const component = factory(tui, ctx.ui.theme, {}, resolve);
@@ -67,7 +68,8 @@ test('native Pi loads and registers setup-share without factory I/O or model use
     const render = await readFile(join(root, 'render.txt'), 'utf8');
     assert.match(render, /80x24/);
     assert.match(render, /120x40/);
-    assert.match(render, /\[ \] Preferences/);
+    assert.match(render, /Select all portable MCP servers/);
+    assert.match(render, /localOnly: Not portable/);
     t.assert.snapshot(render);
   } finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 });

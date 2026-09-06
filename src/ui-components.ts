@@ -55,18 +55,30 @@ export async function review(ctx: ExtensionCommandContext, lines: readonly strin
   await ctx.ui.custom<void>((tui, theme, _keys, done) => reviewComponent(tui, theme, () => done(), lines));
 }
 
-export function selectionComponent(tui: TUI, theme: Theme, done: (ids: string[] | undefined) => void, items: readonly SelectItem[]): Component {
+const selectAllValue = '__setup_share_select_all';
+const continueValue = '__setup_share_continue';
+
+export function selectionComponent(
+  tui: TUI, theme: Theme, done: (ids: string[] | undefined) => void, items: readonly SelectItem[], selectAllLabel?: string,
+): Component {
+  if (items.some(item => item.value === selectAllValue || item.value === continueValue)) throw new Error('Reserved selection value');
   const selected = new Set<string>();
   let list: SelectList;
   function rebuild(index = 0): void {
-    list = new SelectList([...items.map(item => ({ value: item.value, label: `${selected.has(item.value) ? '[x]' : '[ ]'} ${safeDisplay(item.label)}` })),
-      { value: '__continue', label: en.continue }], Math.max(2, Math.min(12, tui.terminal.rows - 8)), listTheme(theme));
+    const controls = selectAllLabel && items.length ? [{ value: selectAllValue, label: safeDisplay(selectAllLabel) }] : [];
+    list = new SelectList([...controls, ...items.map(item => ({ value: item.value, label: `${selected.has(item.value) ? '[x]' : '[ ]'} ${safeDisplay(item.label)}` })),
+      { value: continueValue, label: en.continue }], Math.max(2, Math.min(12, tui.terminal.rows - 8)), listTheme(theme));
     list.setSelectedIndex(index);
     list.onCancel = () => done(undefined);
     list.onSelect = item => {
-      if (item.value === '__continue') { done([...selected]); return; }
+      if (item.value === continueValue) { done([...selected]); return; }
+      if (item.value === selectAllValue) {
+        for (const entry of items) selected.add(entry.value);
+        rebuild(0);
+        return;
+      }
       if (selected.has(item.value)) selected.delete(item.value); else selected.add(item.value);
-      rebuild(items.findIndex(entry => entry.value === item.value));
+      rebuild(controls.length + items.findIndex(entry => entry.value === item.value));
     };
   }
   rebuild();
@@ -75,7 +87,7 @@ export function selectionComponent(tui: TUI, theme: Theme, done: (ids: string[] 
     handleInput(data) {
       if (matchesKey(data, 'space')) {
         const item = list.getSelectedItem();
-        if (item && item.value !== '__continue') list.onSelect?.(item);
+        if (item && item.value !== continueValue) list.onSelect?.(item);
       } else list.handleInput(data);
       tui.requestRender();
     },
@@ -83,8 +95,10 @@ export function selectionComponent(tui: TUI, theme: Theme, done: (ids: string[] 
   };
 }
 
-export async function selectItems(ctx: ExtensionCommandContext, items: readonly SelectItem[]): Promise<string[] | undefined> {
-  return ctx.ui.custom<string[] | undefined>((tui, theme, _keys, done) => selectionComponent(tui, theme, done, items));
+export async function selectItems(
+  ctx: ExtensionCommandContext, items: readonly SelectItem[], selectAllLabel?: string,
+): Promise<string[] | undefined> {
+  return ctx.ui.custom<string[] | undefined>((tui, theme, _keys, done) => selectionComponent(tui, theme, done, items, selectAllLabel));
 }
 
 export async function confirmStep(ctx: ExtensionCommandContext, title: string, warning: string): Promise<boolean> {

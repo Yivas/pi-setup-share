@@ -44,6 +44,12 @@
     "@earendil-works/pi-coding-agent": "0.85.0",
     "@earendil-works/pi-tui": "0.85.0",
     "@types/node": "22.19.0",
+    "@types/yauzl": "3.4.0",
+    "@types/yazl": "3.3.1",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "yauzl": "3.4.0",
+    "yazl": "3.3.1"
   }
 }

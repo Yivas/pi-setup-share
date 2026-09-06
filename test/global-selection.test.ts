@@ -39,6 +39,19 @@ test('MCP selection keeps environment names but never reprojects or returns thei
   });
 });
 
+test('MCP preview exposes portable candidates and safe names for omitted servers', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'mcp.json'), JSON.stringify({ mcpServers: {
+      portable: { command: 'npx', args: ['synthetic-package@1.2.3'] },
+      localOnly: { command: 'node', args: ['C:\\synthetic\\private\\server.js'] },
+    } }));
+    const preview = await readGlobalCategory(store, 'mcpServers');
+    assert.deepEqual(preview.items.map(item => item.label), ['portable']);
+    assert.deepEqual(preview.diagnostics.find(item => item.label)?.label, 'localOnly');
+    assert.equal(JSON.stringify(preview).includes('synthetic\\private'), false);
+  });
+});
+
 test('absence is distinct from empty global configuration and invalid roots fail', async () => {
   await fixture(async (root, store) => {
     const absent = await readGlobalCategory(store, 'keybindings');

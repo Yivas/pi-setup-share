@@ -41,7 +41,14 @@ async function exportSetup(ctx: ExtensionCommandContext, store: FileStore): Prom
       const reason = `${en.categories[category as GlobalCategory]}: ${en.diagnosticReasons[diagnostic.code]}`;
       diagnostics.set(reason, (diagnostics.get(reason) ?? 0) + 1);
     }
-    const ids = await selectItems(ctx, preview.items.map(({ id, label }) => ({ value: id, label })));
+    if (category === 'mcpServers') {
+      const omitted = [...new Set(preview.diagnostics
+        .filter(diagnostic => diagnostic.code === 'unsupported-value' && diagnostic.label)
+        .map(diagnostic => diagnostic.label as string))];
+      if (omitted.length) await review(ctx, [en.omittedMcpTitle, ...omitted.map(label => `${label}: ${en.omittedMcpReason}`)]);
+    }
+    const ids = await selectItems(ctx, preview.items.map(({ id, label }) => ({ value: id, label })),
+      category === 'mcpServers' ? en.selectAllPortableMcp : undefined);
     if (!ids) return;
     const selected = selectGlobalCategory(preview, ids);
     profile = validateProfile({ ...profile, ...selected,
@@ -81,7 +88,8 @@ async function selectImportProfile(ctx: ExtensionCommandContext, input: Resource
     const present = category === 'mcpServers' || category === 'subagents' ? Object.hasOwn(input.integrations ?? {}, category) : Object.hasOwn(input, category);
     if (!present) continue;
     const preview = previewProfileCategory(input, category);
-    const ids = await selectItems(ctx, preview.items.map(item => ({ value: item.id, label: `${category}.${item.label}` })));
+    const ids = await selectItems(ctx, preview.items.map(item => ({ value: item.id, label: `${category}.${item.label}` })),
+      category === 'mcpServers' ? en.selectAllPortableMcp : undefined);
     if (!ids) return undefined;
     const fragment = selectGlobalCategory(preview, ids);
     selected = validateProfile({ ...selected, ...fragment,

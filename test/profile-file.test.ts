@@ -13,13 +13,35 @@ async function fixture(run: (root: string) => Promise<void>): Promise<void> {
   finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 }
 
-test('writes a selected profile exclusively and reads it without side effects', async () => {
+function abortOnCheck(target: number): AbortSignal {
+  const controller = new AbortController();
+  let checks = 0;
+  return {
+    get aborted() {
+      if (++checks === target) queueMicrotask(() => controller.abort());
+      return controller.signal.aborted;
+    },
+    addEventListener: controller.signal.addEventListener.bind(controller.signal),
+    removeEventListener: controller.signal.removeEventListener.bind(controller.signal),
+  } as AbortSignal;
+}
+
+test('writes a selected profile as ZIP exclusively and reads it without side effects', async () => {
+  await fixture(async root => {
+    const path = join(root, 'portable.zip');
+    await writeProfileFile(path, profile, true);
+    assert.equal((await readFile(path)).subarray(0, 4).toString('hex'), '504b0304');
+    assert.deepEqual(await readProfileFile(path), profile);
+    assert.deepEqual(await readdir(root), ['portable.zip']);
+    if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
+  });
+});
+
+test('continues to read legacy plain JSON profiles', async () => {
   await fixture(async root => {
     const path = join(root, 'portable.json');
-    await writeProfileFile(path, profile, true);
+    await writeFile(path, `${JSON.stringify(profile)}\n`);
     assert.deepEqual(await readProfileFile(path), profile);
-    assert.deepEqual(await readdir(root), ['portable.json']);
-    if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
   });
 });
 
@@ -35,7 +57,7 @@ test('refusal and pre-cancellation create nothing', async () => {
 
 test('concurrent exports never replace an existing destination', async () => {
   await fixture(async root => {
-    const path = join(root, 'profile.json');
+    const path = join(root, 'profile.zip');
     const results = await Promise.allSettled([writeProfileFile(path, profile, true), writeProfileFile(path, profile, true)]);
     assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
     assert.deepEqual(await readProfileFile(path), profile);
@@ -74,16 +96,18 @@ test('rejects operational names and relative paths before reading', async () => 
   }
 });
 
-test('cancellation during exclusive open rejects and leaves the reserved file empty', async () => {
+test('cancellation while preparing the archive rejects before reserving output', async () => {
   await fixture(async root => {
-    const controller = new AbortController();
-    let checks = 0;
-    const signal = { get aborted() {
-      if (++checks === 2) queueMicrotask(() => controller.abort());
-      return controller.signal.aborted;
-    } } as AbortSignal;
-    const path = join(root, 'profile.json');
-    await assert.rejects(writeProfileFile(path, profile, true, signal), { code: 'aborted' });
+    const path = join(root, 'profile.zip');
+    await assert.rejects(writeProfileFile(path, profile, true, abortOnCheck(2)), { code: 'aborted' });
+    assert.deepEqual(await readdir(root), []);
+  });
+});
+
+test('cancellation after exclusive open retains an empty reserved output', async () => {
+  await fixture(async root => {
+    const path = join(root, 'profile.zip');
+    await assert.rejects(writeProfileFile(path, profile, true, abortOnCheck(7)), { code: 'aborted' });
     assert.equal((await stat(path)).size, 0);
   });
 });

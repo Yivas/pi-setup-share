@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Export profiles as a standard ZIP containing one `profile.json`, while retaining legacy JSON import.
+- Select every portable MCP server at once and show safe local reasons for servers that cannot be shared.
+
+### Security
+
+- Bound archive size and decompressed profile bytes; reject extra entries, directories, encryption, comments, inconsistent sizes, invalid CRC, and unsupported ZIP structure without extracting files.
+
 ## 0.1.1 — 2026-09-06
 
 ### Changed
