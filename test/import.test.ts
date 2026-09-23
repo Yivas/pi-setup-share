@@ -29,6 +29,17 @@ async function native(root: string): Promise<void> {
   await writeFile(join(root, 'keybindings.json'), '{"app.interrupt":["escape"]}\n');
 }
 
+test('staging rejects sensitive paths from external profiles before any destination write', async () => {
+  await fixture(async (root, store) => {
+    for (const path of ['.env.production', 'id_ecdsa', '.npmrc', 'sessions/current.md']) {
+      await assert.rejects(previewImport(store, { ...empty,
+        resources: [{ kind: 'prompt', path, encoding: 'utf8', content: 'synthetic' }],
+      }), { code: 'invalid-path' });
+    }
+    assert.deepEqual(await readdir(root), []);
+  });
+});
+
 test('staging preview is read-only and stores no content or snapshots in its public plan', async () => {
   await fixture(async (root, store) => {
     const plan = await previewImport(store, profile);
