@@ -66,6 +66,21 @@ test('inspection is read-only, does not install or expose resource contents', as
   });
 });
 
+test('receiver sees the transported omission report before staging v2', async () => {
+  await fixture(async (root, agent, store) => {
+    const source = join(root, 'v2.json');
+    await writeFile(source, JSON.stringify({ format: 'pi-setup-share', version: 2, resources: [],
+      transfer: { scanned: ['mcpServers'], partial: [], notExamined: ['project'],
+        omissions: [{ category: 'mcpServers', reason: 'unsupported', count: 1 }], actions: ['review-omissions'] },
+    }));
+    const ui = context([en.import], [source], [false]);
+    await runSetupShare(ui.ctx, agent, noInstall);
+    assert.match(ui.screens.join(''), /MCP servers: 1 unsupported/);
+    assert.match(ui.screens.join(''), /Review omissions/);
+    assert.deepEqual(await listImports(store), []);
+  });
+});
+
 test('stage refusal is side-effect free; Later, resume, activation and restore retain their separate gates', async () => {
   await fixture(async (root, agent, store) => {
     const source = join(root, 'profile.json');
@@ -125,6 +140,184 @@ test('export selects individual global fields and does not leak excluded values'
     assert.equal(ui.screens.join('').includes('EXCLUDED_SENTINEL'), false);
     assert.match(ui.screens.join(''), /Unsupported field omitted/);
     assert.equal(ui.notifications.join('').includes(root), false);
+  });
+});
+
+test('sender report counts omitted subagent overrides and unpinned packages without their values', async () => {
+  await fixture(async (root, agent) => {
+    await writeFile(join(agent, 'settings.json'), JSON.stringify({
+      subagents: { disableBuiltins: false, overrides: { privateAgent: 'SYNTHETIC_SECRET_SENTINEL' } },
+      packages: ['npm:example@1.2.3', 'npm:unversioned@latest'],
+    }));
+    const output = join(root, 'omissions.zip');
+    const ui = context([en.export], [output], [
+      { count: 5, include: [3, 4] }, { count: 1, include: [0] }, { count: 1, include: [0] }, true,
+    ], [false]);
+    await runSetupShare(ui.ctx, agent, noInstall, root);
+    const exported = await readProfileFile(output);
+    assert.ok(exported.transfer?.omissions.some(item => item.category === 'subagents' && item.reason === 'unsupported'));
+    assert.ok(exported.transfer?.omissions.some(item => item.category === 'packages' && item.reason === 'unsupported'));
+    assert.equal(JSON.stringify(exported).includes('SYNTHETIC_SECRET_SENTINEL'), false);
+    assert.equal(ui.screens.join('').includes('SYNTHETIC_SECRET_SENTINEL'), false);
+  });
+});
+
+test('export selects discovered global files without reading unselected secrets', async () => {
+  await fixture(async (root, agent) => {
+    await mkdir(join(agent, 'extensions'));
+    await mkdir(join(agent, 'skills', 'craft'), { recursive: true });
+    await writeFile(join(agent, 'extensions', 'sample.ts'), 'synthetic-extension');
+    await writeFile(join(agent, 'skills', 'craft', 'SKILL.md'), 'synthetic-skill');
+    await writeFile(join(agent, 'skills', 'craft', '.env'), 'SYNTHETIC_SECRET_NOT_EXPORTED');
+    const output = join(root, 'resources.zip');
+    const ui = context([en.export], [output], [
+      { count: 5, include: [] }, { count: 2, include: [0, 1] }, true,
+    ], [true, true, true, true, false]);
+    await runSetupShare(ui.ctx, agent, noInstall, root);
+    const exported = await readProfileFile(output);
+    assert.equal(exported.version, 2);
+    assert.deepEqual(exported.resources.map(resource => resource.path), ['sample.ts', 'craft/SKILL.md']);
+    assert.ok(exported.transfer?.scanned.includes('skill'));
+    assert.equal(exported.transfer?.omissions.some(item => item.reason === 'excluded'), true);
+    assert.deepEqual(exported.entrypoints, { extension: ['sample.ts'], skill: ['craft/SKILL.md'] });
+    assert.equal(JSON.stringify(exported).includes('SYNTHETIC_SECRET_NOT_EXPORTED'), false);
+    assert.equal(exported.transfer?.notExamined.includes('project'), true);
+    assert.equal(ui.screens.join('').includes('SYNTHETIC_SECRET_NOT_EXPORTED'), false);
+  });
+});
+
+test('moves a synthetic sender setup to another agent directory with separate install, activation and restore', async () => {
+  await fixture(async (root, sender) => {
+    const receiver = join(root, 'receiver');
+    await mkdir(receiver);
+    await writeFile(join(sender, 'settings.json'), JSON.stringify({ quietStartup: true,
+      packages: [{ source: 'npm:example@1.2.3' }, { source: `git:github.com/example/tools@${'a'.repeat(40)}` }],
+      unknownPrivate: 'SYNTHETIC_SECRET_SENTINEL' }));
+    await writeFile(join(sender, 'keybindings.json'), JSON.stringify({ 'app.interrupt': [] }));
+    await writeFile(join(sender, 'mcp.json'), JSON.stringify({ mcpServers: {
+      example: { command: 'example-server', env: { EXAMPLE_KEY: 'SYNTHETIC_SECRET_SENTINEL' } },
+      localOnly: { command: 'node', args: ['C:\\synthetic\\private\\server.js'] },
+    } }));
+    await mkdir(join(sender, 'extensions'));
+    await mkdir(join(sender, 'skills', 'craft'), { recursive: true });
+    await mkdir(join(sender, 'prompts'));
+    await mkdir(join(sender, 'themes'));
+    await mkdir(join(sender, 'agents'));
+    await writeFile(join(sender, 'extensions', 'sample.ts'), 'export default function setup() {}');
+    await writeFile(join(sender, 'extensions', '.env'), 'SYNTHETIC_SECRET_SENTINEL');
+    await writeFile(join(sender, 'skills', 'craft', 'SKILL.md'), '---\nname: craft\ndescription: Synthetic skill\n---\n# Craft');
+    await writeFile(join(sender, 'skills', 'craft', 'support.ts'), 'export const craft = true;');
+    await writeFile(join(sender, 'skills', 'craft', '.npmrc'), 'SYNTHETIC_SECRET_SENTINEL');
+    await writeFile(join(sender, 'prompts', 'hello.md'), '# Synthetic prompt');
+    await writeFile(join(sender, 'themes', 'blue.json'), '{"name":"blue","colors":{}}');
+    await writeFile(join(sender, 'agents', 'helper.md'), '# Synthetic agent');
+    await writeFile(join(sender, 'agents', 'support.ts'), 'export const helper = true;');
+    await mkdir(join(receiver, 'extensions'));
+    await writeFile(join(receiver, 'extensions', 'sample.ts'), 'ORIGINAL_RECEIVER_EXTENSION');
+    const originalSettings = '{"quietStartup":false,"unrelated":"keep"}\n';
+    await writeFile(join(receiver, 'settings.json'), originalSettings);
+    const archive = join(root, 'portable.zip');
+    const exported = context([en.export], [archive], [
+      { count: 5, include: [0, 1, 2, 4] }, { count: 1, include: [0] }, { count: 1, include: [0] },
+      { count: 2, include: [0] }, { count: 2, include: [0, 1] }, { count: 7, include: [0, 1, 2, 3, 4, 5, 6] }, true,
+    ], [true, true, true, true, true, true, true, false]);
+    await runSetupShare(exported.ctx, sender, noInstall, root);
+    const transferred = await readProfileFile(archive);
+    assert.equal(transferred.version, 2);
+    assert.equal(transferred.integrations?.mcpServers?.example?.envNames?.[0], 'EXAMPLE_KEY');
+    assert.equal(JSON.stringify(transferred).includes('SYNTHETIC_SECRET_SENTINEL'), false);
+    assert.deepEqual(transferred.keybindings, { 'app.interrupt': [] });
+    assert.equal(transferred.packages?.length, 2);
+    assert.equal(transferred.transfer?.omissions.some(item => item.category === 'mcpServers' && item.reason === 'unsupported'), true);
+    assert.equal(exported.screens.join('').includes('SYNTHETIC_SECRET_SENTINEL'), false);
+    assert.equal(exported.screens.join('').includes('private\\server.js'), false);
+    assert.equal(exported.screens.join('').includes('.npmrc'), false);
+    assert.deepEqual(transferred.resources.map(resource => `${resource.kind}/${resource.path}`), [
+      'extension/sample.ts', 'skill/craft/SKILL.md', 'skill/craft/support.ts',
+      'prompt/hello.md', 'theme/blue.json', 'agent/helper.md', 'agent/support.ts',
+    ]);
+    assert.deepEqual(transferred.entrypoints, { extension: ['sample.ts'], skill: ['craft/SKILL.md'],
+      prompt: ['hello.md'], theme: ['blue.json'], agent: ['helper.md'] });
+    const receiverStore = await FileStore.open(receiver);
+    const inspected = context([en.inspect], [archive], []);
+    await runSetupShare(inspected.ctx, receiver, noInstall, root);
+    assert.match(inspected.screens.join(''), /Sender-supplied inventory report/);
+    assert.deepEqual(await listImports(receiverStore), []);
+    assert.equal(await readFile(join(receiver, 'settings.json'), 'utf8'), originalSettings);
+    let installs = 0;
+    const installed = (packageStore: string, source: string) => join(packageStore, source.startsWith('npm:') ? 'npm' : 'git');
+    const installer: PackageInstallerFactory = packageStore => ({
+      install: async source => { installs++; await mkdir(installed(packageStore, source)); },
+      getInstalledPath: source => installed(packageStore, source),
+    });
+    const imported = context([en.import], [archive], [
+      { count: 1, include: [0] }, { count: 1, include: [0] }, { count: 2, include: [0] },
+      { count: 2, include: [0, 1] }, { count: 7, include: [0, 1, 2, 3, 4, 5, 6] }, true, false,
+    ]);
+    await runSetupShare(imported.ctx, receiver, installer, root);
+    assert.equal(installs, 0);
+    const id = (await listImports(receiverStore))[0]!;
+    assert.equal((await inspectImport(receiverStore, id)).state, 'staged');
+    assert.equal(await readFile(join(receiver, 'settings.json'), 'utf8'), originalSettings);
+    const reportIndex = imported.screens.findIndex(screen => screen.includes('Sender-supplied inventory report'));
+    const stageIndex = imported.screens.findIndex(screen => screen.includes(en.stageTitle));
+    assert.ok(reportIndex >= 0 && stageIndex > reportIndex);
+    const resumed = context([en.resume, options => options[0]!, en.overwrite], [], [true, true]);
+    await runSetupShare(resumed.ctx, receiver, installer, root);
+    assert.ok(resumed.menus.some(options => options.includes(en.preserve) && options.includes(en.overwrite)));
+    assert.equal(installs, 2);
+    assert.equal((await inspectImport(receiverStore, id)).state, 'active');
+    const settings = JSON.parse(await readFile(join(receiver, 'settings.json'), 'utf8'));
+    assert.equal(settings.quietStartup, true);
+    const mcp = JSON.parse(await readFile(join(receiver, 'mcp.json'), 'utf8'));
+    assert.equal(mcp.mcpServers.example.disabled, true);
+    assert.equal(settings.unrelated, 'keep');
+    assert.equal(settings.extensions.length, 1);
+    const managed = join(receiver, 'setup-share', 'imports', id, 'resources');
+    assert.equal(await readFile(join(managed, 'extension', 'sample.ts'), 'utf8'), 'export default function setup() {}');
+    assert.equal(await readFile(join(managed, 'skill', 'craft', 'support.ts'), 'utf8'), 'export const craft = true;');
+    assert.equal(await readFile(join(managed, 'prompt', 'hello.md'), 'utf8'), '# Synthetic prompt');
+    assert.equal(await readFile(join(managed, 'theme', 'blue.json'), 'utf8'), '{"name":"blue","colors":{}}');
+    assert.equal(await readFile(join(receiver, 'setup-share', 'imports', id, 'agents-package', 'agents', 'helper.md'), 'utf8'), '# Synthetic agent');
+    assert.equal(await readFile(join(receiver, 'setup-share', 'imports', id, 'agents-package', 'agents', 'support.ts'), 'utf8'), 'export const helper = true;');
+    assert.equal(JSON.stringify(settings).includes('support.ts'), false);
+    assert.equal(await readFile(join(receiver, 'extensions', 'sample.ts'), 'utf8'), 'ORIGINAL_RECEIVER_EXTENSION');
+    await runSetupShare(context([en.restore, options => options[0]!], [], [true]).ctx, receiver, installer, root);
+    assert.deepEqual(await listImports(receiverStore), []);
+    assert.equal(await readFile(join(receiver, 'settings.json'), 'utf8'), originalSettings);
+    assert.equal(await readFile(join(receiver, 'extensions', 'sample.ts'), 'utf8'), 'ORIGINAL_RECEIVER_EXTENSION');
+  });
+});
+
+test('candidate cap marks the exported report as partial', async () => {
+  await fixture(async (root, agent) => {
+    const directory = join(agent, 'extensions');
+    await mkdir(directory, { recursive: true });
+    await Promise.all(Array.from({ length: 257 }, (_, index) =>
+      writeFile(join(directory, `extension-${index}.ts`), 'synthetic')));
+    const output = join(root, 'partial.zip');
+    const ui = context([en.export], [output], [{ count: 5, include: [] }, { count: 256, include: [] }, true], [true, true, false]);
+    await runSetupShare(ui.ctx, agent, noInstall, root);
+    const transfer = (await readProfileFile(output)).transfer;
+    assert.ok(transfer?.partial.includes('extension'));
+    assert.equal(transfer?.scanned.includes('extension'), false);
+    assert.ok(transfer?.omissions.some(item => item.category === 'resourceFiles' && item.reason === 'excluded'));
+  });
+});
+
+test('duplicate global resource paths require an explicit source choice', async () => {
+  await fixture(async (root, agent) => {
+    await mkdir(join(agent, 'skills', 'craft'), { recursive: true });
+    await mkdir(join(root, '.agents', 'skills', 'craft'), { recursive: true });
+    await writeFile(join(agent, 'skills', 'craft', 'SKILL.md'), 'from Pi');
+    await writeFile(join(root, '.agents', 'skills', 'craft', 'SKILL.md'), 'from user');
+    const output = join(root, 'choice.zip');
+    const ui = context([en.export, options => options[1]!], [output], [
+      { count: 5, include: [] }, { count: 2, include: [0, 1] }, true,
+    ], [true, true, true, false]);
+    await runSetupShare(ui.ctx, agent, noInstall, root);
+    assert.deepEqual((await readProfileFile(output)).resources.map(resource => resource.content), ['from user']);
+    assert.deepEqual(ui.menus.at(-1), ['Pi skills', 'User skills']);
   });
 });
 

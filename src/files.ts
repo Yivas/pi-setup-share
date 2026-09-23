@@ -1,11 +1,13 @@
 import { Buffer, isUtf8 } from 'node:buffer';
 import { constants, type BigIntStats } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, open, opendir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import { PROFILE_LIMITS, validateProfile, type ProfileResource, type ResourceKind } from './profile.ts';
+import { PROFILE_LIMITS, assertPortableResourceRoot, validateProfile, type ProfileResource, type ResourceKind } from './profile.ts';
 import { ProfileError, requireDataArray, requireRecord } from './validation.ts';
 
 export interface ResourceSelection { kind: ResourceKind; path: string }
+export interface ResourceCandidate extends ResourceSelection { entrypoint: boolean }
+export interface ResourceInventory { candidates: ResourceCandidate[]; omitted: number; truncated: boolean }
 export type ResourceReadErrorCode = 'unavailable' | 'not-file' | 'link' | 'changed' | 'limit-exceeded' | 'aborted';
 
 export class ResourceReadError extends Error {
@@ -89,6 +91,77 @@ async function readResource(
   }
 }
 
+// Enumerate names only. Reading selected content remains the responsibility of exportResources.
+export async function discoverResources(
+  root: string, kind: ResourceKind, signal?: AbortSignal, maxEntries = 1024, skipRootDirectories: readonly string[] = [],
+): Promise<ResourceInventory> {
+  if (typeof root !== 'string' || !isAbsolute(root) || root.includes('\0')
+      || !['extension', 'skill', 'prompt', 'theme', 'agent'].includes(kind)
+      || !Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 1024) {
+    throw new ProfileError('invalid-path', 'inventory');
+  }
+  assertPortableResourceRoot(root);
+  const candidates: ResourceCandidate[] = [];
+  let omitted = 0;
+  let visited = 0;
+  let truncated = false;
+  const deadline = Date.now() + 5_000; // Cooperative; an in-flight filesystem call cannot be interrupted.
+  try {
+    checkAbort(signal, 'inventory');
+    let rootInfo: Awaited<ReturnType<typeof lstat>>;
+    try { rootInfo = await lstat(root); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { candidates: [], omitted: 0, truncated: false };
+      throw error;
+    }
+    assertPortableResourceRoot(await realpath(root));
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new ResourceReadError('link', 'inventory');
+    async function visit(directory: string, prefix: string, depth: number): Promise<void> {
+      checkAbort(signal, 'inventory');
+      if (Date.now() > deadline) { truncated = true; return; }
+      // opendir bounds memory even if a user directory contains millions of entries.
+      const entries = await opendir(directory);
+      for await (const entry of entries) {
+        checkAbort(signal, 'inventory');
+        if (Date.now() > deadline || ++visited > maxEntries) { truncated = true; break; }
+        const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) { omitted++; continue; }
+        try { validateProfile({ format: 'pi-setup-share', version: 1, resources: [
+          { kind, path, encoding: 'utf8', content: '' },
+        ] }); } catch (error) {
+          if (!(error instanceof ProfileError)) throw error;
+          omitted++;
+          continue;
+        }
+        if (entry.isDirectory()) {
+          if (depth === 0 && skipRootDirectories.includes(entry.name)) continue;
+          if (depth >= 4 || kind === 'prompt' || kind === 'theme') { omitted++; continue; }
+          await visit(join(directory, entry.name), path, depth + 1);
+          if (truncated) break;
+          continue;
+        }
+        const name = entry.name;
+        if (kind === 'skill' && depth === 0) { omitted++; continue; }
+        const entrypoint = kind === 'extension' ? /\.(?:ts|js)$/.test(name) && (depth === 0 || /^index\.(?:ts|js)$/.test(name))
+          : kind === 'skill' ? name === 'SKILL.md' && depth > 0
+          : kind === 'prompt' ? depth === 0 && name.endsWith('.md') && !name.endsWith('.chain.md')
+          : kind === 'theme' ? depth === 0 && name.endsWith('.json')
+          : name.endsWith('.md') && !name.endsWith('.chain.md');
+        if (kind === 'prompt' && !entrypoint || kind === 'theme' && !entrypoint) { omitted++; continue; }
+        if (candidates.length >= PROFILE_LIMITS.resources) { omitted++; truncated = true; continue; }
+        candidates.push({ kind, path, entrypoint });
+      }
+    }
+    await visit(root, '', 0);
+    if (Date.now() > deadline) truncated = true;
+    candidates.sort((a, b) => a.path.localeCompare(b.path, 'en'));
+    return { candidates, omitted, truncated };
+  } catch (error) {
+    if (error instanceof ResourceReadError || error instanceof ProfileError) throw error;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new ResourceReadError('changed', 'inventory');
+    throw new ResourceReadError('unavailable', 'inventory');
+  }
+}
+
 export async function exportResources(
   root: string, selection: readonly ResourceSelection[], signal?: AbortSignal,
 ): Promise<ProfileResource[]> {
@@ -98,15 +171,8 @@ export async function exportResources(
     return { kind: entry.kind, path: entry.path, encoding: 'utf8', content: '' };
   });
   const validated = validateProfile({ format: 'pi-setup-share', version: 1, resources });
-  const operationalNames = new Set(['auth.json', 'trust.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json']);
-  for (let index = 0; index < validated.resources.length; index++) {
-    const path = validated.resources[index]?.path.toLowerCase() ?? '';
-    if (operationalNames.has(path.split('/').at(-1) ?? '') || /\.(?:log|jsonl)$/.test(path)
-        || path.split('/').some(segment => ['sessions', 'history', 'logs', 'node_modules'].includes(segment))) {
-      throw new ProfileError('invalid-path', `selection[${index}].path`);
-    }
-  }
   if (typeof root !== 'string' || !isAbsolute(root) || root.includes('\0')) throw new ProfileError('invalid-path', 'root');
+  assertPortableResourceRoot(root);
   let field = 'root';
   try {
     checkAbort(signal, field);
@@ -114,6 +180,7 @@ export async function exportResources(
     if (rootInfo.isSymbolicLink()) throw new ResourceReadError('link', field);
     if (!rootInfo.isDirectory()) throw new ResourceReadError('not-file', field);
     const canonicalRoot = await realpath(root);
+    assertPortableResourceRoot(canonicalRoot);
     const rootStat = await lstat(canonicalRoot, { bigint: true });
     if (!sameIdentity(rootInfo, rootStat)) throw new ResourceReadError('changed', field);
     const output: ProfileResource[] = [];

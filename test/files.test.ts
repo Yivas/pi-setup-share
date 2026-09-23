@@ -3,7 +3,7 @@ import { appendFile, link, mkdir, mkdtemp, open, rm, symlink, writeFile, type Fi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { exportResources, ResourceReadError } from '../src/files.ts';
+import { discoverResources, exportResources, ResourceReadError } from '../src/files.ts';
 import { parseProfile, PROFILE_LIMITS, ProfileError } from '../src/profile.ts';
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
@@ -110,9 +110,71 @@ test('bounds escaped serialized JSON separately from decoded content', async () 
 });
 
 test('rejects known operational files even when explicitly selected', async () => {
-  for (const path of ['auth.json', 'nested/TRUST.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json', 'sessions/session.json', 'log.log', 'events.jsonl', 'node_modules/package/index.js']) {
+  for (const path of ['auth.json', 'nested/TRUST.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json', '.env', 'nested/.ENV.local', '.npmrc', 'nested/CREDENTIALS.json', '.aws/credentials', '.ssh/id_rsa', 'id_ecdsa', 'nested/ID_ECDSA', 'id_ed25519_sk', 'sessions/session.json', 'log.log', 'events.jsonl', 'node_modules/package/index.js']) {
     await assert.rejects(exportResources(join(tmpdir(), 'not-created-synthetic-root'), [{ kind: 'extension', path }]), ProfileError);
   }
+});
+
+test('manual roots inside known operational directories cannot bypass path exclusions', async () => {
+  await fixture(async parent => {
+    const root = join(parent, 'sessions');
+    await mkdir(root);
+    await writeFile(join(root, 'current.md'), 'synthetic session marker');
+    await assert.rejects(exportResources(root, [{ kind: 'prompt', path: 'current.md' }]), { code: 'invalid-path' });
+    await assert.rejects(discoverResources(root, 'prompt'), { code: 'invalid-path' });
+  });
+});
+
+test('discovers bounded local candidates without reading their contents', async () => {
+  await fixture(async root => {
+    await mkdir(join(root, 'my-skill'));
+    await writeFile(join(root, 'my-skill', 'SKILL.md'), 'synthetic-skill-sentinel');
+    await writeFile(join(root, 'my-skill', 'support.ts'), 'synthetic-support-sentinel');
+    await writeFile(join(root, 'my-skill', '.env'), 'synthetic-secret-sentinel');
+    const result = await discoverResources(root, 'skill');
+    assert.deepEqual(result.candidates.map(candidate => [candidate.path, candidate.entrypoint]),
+      [['my-skill/SKILL.md', true], ['my-skill/support.ts', false]]);
+    assert.equal(result.omitted, 1);
+    assert.equal(JSON.stringify(result).includes('synthetic-secret-sentinel'), false);
+  });
+});
+
+test('does not follow links, scan nested prompt templates, or ignore inventory limits', async () => {
+  await fixture(async root => {
+    await mkdir(join(root, 'nested'));
+    await writeFile(join(root, 'main.md'), 'synthetic');
+    await writeFile(join(root, 'nested', 'hidden.md'), 'synthetic');
+    await symlink(join(root, 'nested'), join(root, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    const result = await discoverResources(root, 'prompt');
+    assert.deepEqual(result.candidates.map(candidate => candidate.path), ['main.md']);
+    assert.ok(result.omitted >= 2);
+    for (let index = 0; index < 4; index++) await writeFile(join(root, `${index}.md`), 'synthetic');
+    const bounded = await discoverResources(root, 'prompt', undefined, 3);
+    assert.equal(bounded.truncated, true);
+    assert.ok(bounded.candidates.length <= 3);
+  });
+});
+
+test('cooperative inventory deadline reports partial coverage', async t => {
+  await fixture(async root => {
+    await writeFile(join(root, 'sample.ts'), 'synthetic');
+    let ticks = 0;
+    t.mock.method(Date, 'now', () => ++ticks * 6_000);
+    const result = await discoverResources(root, 'extension');
+    t.mock.restoreAll();
+    assert.equal(result.truncated, true);
+    assert.deepEqual(result.candidates, []);
+  });
+});
+
+test('offers at most 256 of 257 candidates without failing the entire inventory', async () => {
+  await fixture(async root => {
+    await Promise.all(Array.from({ length: 257 }, (_, index) => writeFile(join(root, `extension-${index}.ts`), 'synthetic')));
+    const result = await discoverResources(root, 'extension');
+    assert.equal(result.candidates.length, 256);
+    assert.equal(result.omitted, 1);
+    assert.equal(result.truncated, true);
+  });
 });
 
 test('detects growth during reading and closes the resource handle', async t => {

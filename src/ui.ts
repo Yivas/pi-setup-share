@@ -1,11 +1,14 @@
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import { homedir } from 'node:os';
 import { exportResources, ResourceReadError, type ResourceSelection } from './files.ts';
 import { previewProfileCategory, readGlobalCategory, selectGlobalCategory, type GlobalCategory } from './global-selection.ts';
 import { activateImport, applyImport, inspectImport, installPackages, listImports, previewActivation, previewImport, previewInstallation, restoreImport, type PackageInstallerFactory } from './import.ts';
 import { en } from './locales/en.ts';
 import { readProfileFile, writeProfileFile } from './profile-file.ts';
+import { discoverGlobalResources } from './resource-discovery.ts';
 import { validateProfile, type ResourceKind, type ResourceProfile } from './profile.ts';
 import { FileStore, StorageError } from './storage.ts';
+import { TRANSFER_CATEGORIES, RECEIVER_ACTIONS, type TransferCategory, type TransferReason } from './transfer-report.ts';
 import { recoverChanges } from './transaction.ts';
 import { confirmStep, review, runOperation, safeDisplay, selectItems } from './ui-components.ts';
 import { ProfileError } from './validation.ts';
@@ -18,7 +21,7 @@ export function errorMessage(error: unknown): string {
 }
 
 export function profileSummary(profile: ResourceProfile): string[] {
-  const lines = [en.profileWarning, `${en.resourceCount}: ${profile.resources.length}`, `${en.packageCount}: ${profile.packages?.length ?? 0}`];
+  const lines = [en.profileWarning, en.selectedContents, `${en.resourceCount}: ${profile.resources.length}`, `${en.packageCount}: ${profile.packages?.length ?? 0}`];
   for (const resource of profile.resources) lines.push(`${resource.kind}: ${resource.path}`);
   for (const [kind, paths] of Object.entries(profile.entrypoints ?? {})) lines.push(`${en.entrypointCount} (${kind}): ${paths.join(', ')}`);
   for (const [category, entries] of Object.entries({ preferences: profile.preferences, keybindings: profile.keybindings,
@@ -29,17 +32,39 @@ export function profileSummary(profile: ResourceProfile): string[] {
   return lines.map(safeDisplay);
 }
 
-async function exportSetup(ctx: ExtensionCommandContext, store: FileStore): Promise<void> {
+function transferSummary(profile: ResourceProfile, receiver: boolean): string[] {
+  const report = profile.transfer;
+  if (!report) return [];
+  return [receiver ? en.reportClaimWarning : en.senderReport,
+    `${en.transferScanned}: ${report.scanned.map(category => en.transferCategories[category]).join(', ') || en.none}`,
+    `${en.transferPartial}: ${report.partial.map(category => en.transferCategories[category]).join(', ') || en.none}`,
+    `${en.transferNotExamined}: ${report.notExamined.map(category => en.transferCategories[category]).join(', ') || en.none}`,
+    ...report.omissions.map(item => `${en.transferCategories[item.category]}: ${item.count} ${en.transferReasons[item.reason]}`),
+    ...report.actions.map(action => `${en.receiverAction}: ${en.receiverActions[action]}`),
+  ].map(safeDisplay);
+}
+
+async function exportSetup(ctx: ExtensionCommandContext, store: FileStore, agentDir: string, homeDir: string): Promise<void> {
   await review(ctx, [en.exportWarning]);
   const categories = await selectItems(ctx, Object.entries(en.categories).map(([value, label]) => ({ value, label })));
   if (!categories) return;
   let profile = validateProfile({ format: 'pi-setup-share', version: 1, resources: [] });
   const diagnostics = new Map<string, number>();
+  const omissions = new Map<string, { category: TransferCategory; reason: TransferReason; count: number }>();
+  function addOmission(category: TransferCategory, reason: TransferReason, count: number): void {
+    if (!count) return;
+    const key = `${category}/${reason}`;
+    const previous = omissions.get(key);
+    omissions.set(key, { category, reason, count: Math.min(4096, (previous?.count ?? 0) + count) });
+  }
+  let scannedResources = false;
+  let truncatedResources = false;
   for (const category of categories) {
     const preview = await readGlobalCategory(store, category as GlobalCategory);
     for (const diagnostic of preview.diagnostics) {
       const reason = `${en.categories[category as GlobalCategory]}: ${en.diagnosticReasons[diagnostic.code]}`;
       diagnostics.set(reason, (diagnostics.get(reason) ?? 0) + 1);
+      if (diagnostic.code !== 'shared-key') addOmission(category as GlobalCategory, 'unsupported', 1);
     }
     if (category === 'mcpServers') {
       const omitted = [...new Set(preview.diagnostics
@@ -50,32 +75,89 @@ async function exportSetup(ctx: ExtensionCommandContext, store: FileStore): Prom
     const ids = await selectItems(ctx, preview.items.map(({ id, label }) => ({ value: id, label })),
       category === 'mcpServers' ? en.selectAllPortableMcp : undefined);
     if (!ids) return;
+    addOmission(category as GlobalCategory, 'unselected', preview.items.length - ids.length);
     const selected = selectGlobalCategory(preview, ids);
     profile = validateProfile({ ...profile, ...selected,
       ...(profile.integrations || selected.integrations ? { integrations: { ...profile.integrations, ...selected.integrations } } : {}),
     });
   }
   if (await ctx.ui.confirm(en.resourcesTitle, en.resourcesWarning)) {
-    const root = await ctx.ui.input(en.resourceRoot);
-    if (!root) return;
-    const selections: ResourceSelection[] = [];
-    const entrypoints: Partial<Record<ResourceKind, string[]>> = {};
-    do {
-      const label = await ctx.ui.select(en.resourceKind, Object.values(en.resourceKinds));
-      if (!label) return;
-      const kind = (Object.entries(en.resourceKinds).find(([, value]) => value === label)?.[0]) as ResourceKind;
-      const path = await ctx.ui.input(en.resourcePath);
-      if (!path) return;
-      selections.push({ kind, path });
-      if (await ctx.ui.confirm(en.resourceEntry, en.resourceEntryWarning)) {
-        entrypoints[kind] ??= [];
-        entrypoints[kind].push(path);
+    if (await ctx.ui.confirm(en.discoverTitle, en.discoverWarning)) {
+      const inventory = await runOperation(ctx, en.reading, signal => discoverGlobalResources(agentDir, homeDir, signal));
+      scannedResources = true;
+      truncatedResources = inventory.truncated;
+      const ids = await selectItems(ctx, inventory.items.map((item, index) => ({
+        value: String(index), label: `${item.origin} · ${item.candidate.path}${item.candidate.entrypoint ? ` (${en.entrypointCount})` : ''}`,
+      })));
+      if (!ids) return;
+      const selected = inventory.items.filter((_item, index) => ids.includes(String(index)));
+      for (const { candidate } of inventory.items.filter((_item, index) => !ids.includes(String(index)))) {
+        addOmission(candidate.kind, 'unselected', 1);
       }
-    } while (selections.length < 256 && await ctx.ui.confirm(en.anotherResource, en.resourcesWarning));
-    const resources = await exportResources(root, selections);
-    profile = validateProfile({ ...profile, resources, entrypoints });
+      addOmission('resourceFiles', 'excluded', inventory.omitted);
+      const unique = new Map<string, typeof selected[number]>();
+      for (const item of selected) {
+        const key = `${item.candidate.kind}/${item.candidate.path}`.toLowerCase().toUpperCase().normalize('NFC');
+        const prior = unique.get(key);
+        if (prior) {
+          addOmission(item.candidate.kind, 'collision', 1);
+          const origin = await ctx.ui.select(en.duplicateResource, [prior.origin, item.origin]);
+          if (!origin) return;
+          if (origin === item.origin) unique.set(key, item);
+        } else unique.set(key, item);
+      }
+      const chosen = [...unique.values()];
+      const resources = [...profile.resources];
+      const entrypoints: Partial<Record<ResourceKind, string[]>> = { ...profile.entrypoints };
+      for (const root of new Set(chosen.map(item => item.root))) {
+        const group = chosen.filter(item => item.root === root);
+        resources.push(...await exportResources(root, group.map(({ candidate }) => ({ kind: candidate.kind, path: candidate.path }))));
+        for (const { candidate } of group.filter(item => item.candidate.entrypoint)) {
+          if (await ctx.ui.confirm(en.resourceEntry, `${candidate.kind}: ${safeDisplay(candidate.path)} — ${en.resourceEntryWarning}`)) {
+            const paths = entrypoints[candidate.kind] ?? [];
+            paths.push(candidate.path);
+            entrypoints[candidate.kind] = paths;
+          }
+        }
+      }
+      profile = validateProfile({ ...profile, resources, entrypoints });
+      diagnostics.set(en.omittedResources, inventory.omitted);
+      if (inventory.truncated) await review(ctx, [en.inventoryTruncated]);
+    }
+    if (await ctx.ui.confirm(en.addManualTitle, en.resourcesWarning)) {
+      const root = await ctx.ui.input(en.resourceRoot);
+      if (!root) return;
+      const selections: ResourceSelection[] = [];
+      const entrypoints: Partial<Record<ResourceKind, string[]>> = {};
+      do {
+        const label = await ctx.ui.select(en.resourceKind, Object.values(en.resourceKinds));
+        if (!label) return;
+        const kind = (Object.entries(en.resourceKinds).find(([, value]) => value === label)?.[0]) as ResourceKind;
+        const path = await ctx.ui.input(en.resourcePath);
+        if (!path) return;
+        selections.push({ kind, path });
+        if (await ctx.ui.confirm(en.resourceEntry, en.resourceEntryWarning)) {
+          entrypoints[kind] ??= [];
+          entrypoints[kind].push(path);
+        }
+      } while (selections.length < 256 && await ctx.ui.confirm(en.anotherResource, en.resourcesWarning));
+      const resources = await exportResources(root, selections);
+      profile = validateProfile({ ...profile, resources: [...profile.resources, ...resources],
+        entrypoints: { ...profile.entrypoints, ...Object.fromEntries(Object.entries(entrypoints).map(([kind, paths]) => [kind,
+          [...(profile.entrypoints?.[kind as ResourceKind] ?? []), ...paths],
+        ])) },
+      });
+    }
   }
-  await review(ctx, [...profileSummary(profile), ...[...diagnostics].map(([reason, count]) => `${reason}: ${count}`)]);
+  const resourceKinds: TransferCategory[] = ['extension', 'skill', 'prompt', 'theme', 'agent', 'resourceFiles'];
+  const partial = truncatedResources ? resourceKinds : [];
+  const scanned = [...categories as TransferCategory[], ...(scannedResources && !truncatedResources ? resourceKinds : [])];
+  const notExamined = TRANSFER_CATEGORIES.filter(category => !scanned.includes(category) && !partial.includes(category));
+  profile = validateProfile({ ...profile, version: 2, transfer: {
+    scanned, partial, notExamined, omissions: [...omissions.values()], actions: [...RECEIVER_ACTIONS],
+  } });
+  await review(ctx, [...[...diagnostics].map(([reason, count]) => `${reason}: ${count}`), ...transferSummary(profile, false)]);
+  await review(ctx, profileSummary(profile));
   const path = await ctx.ui.input(en.destination);
   if (!path || !await confirmStep(ctx, en.saveTitle, en.saveWarning)) return;
   await runOperation(ctx, en.working, signal => writeProfileFile(path, profile, true, signal));
@@ -104,7 +186,7 @@ async function selectImportProfile(ctx: ExtensionCommandContext, input: Resource
       paths.filter(path => selected.resources.some(resource => resource.kind === kind && resource.path === path)),
     ]));
   }
-  return validateProfile(selected);
+  return validateProfile({ ...selected, version: input.version, ...(input.transfer ? { transfer: input.transfer } : {}) });
 }
 
 async function continueImport(ctx: ExtensionCommandContext, store: FileStore, importId: string, installer: PackageInstallerFactory): Promise<void> {
@@ -133,7 +215,7 @@ async function continueImport(ctx: ExtensionCommandContext, store: FileStore, im
   ctx.ui.notify(en.active, 'info');
 }
 
-export async function runSetupShare(ctx: ExtensionCommandContext, agentDir: string, installer: PackageInstallerFactory): Promise<void> {
+export async function runSetupShare(ctx: ExtensionCommandContext, agentDir: string, installer: PackageInstallerFactory, homeDir = homedir()): Promise<void> {
   if (ctx.mode !== 'tui' || !ctx.hasUI) return;
   const action = await ctx.ui.select(en.menu, [en.export, en.inspect, en.import, en.resume, en.restore, en.recover]);
   if (!action) return;
@@ -141,9 +223,14 @@ export async function runSetupShare(ctx: ExtensionCommandContext, agentDir: stri
     const path = await ctx.ui.input(en.source);
     if (!path) return;
     const original = await readProfileFile(path);
-    if (action === en.inspect) { await review(ctx, profileSummary(original)); return; }
+    if (action === en.inspect) {
+      if (original.transfer) await review(ctx, transferSummary(original, true));
+      await review(ctx, profileSummary(original));
+      return;
+    }
     const profile = await selectImportProfile(ctx, original);
     if (!profile) return;
+    if (original.transfer) await review(ctx, transferSummary(original, true));
     await review(ctx, profileSummary(profile));
     const store = await FileStore.open(agentDir);
     const staging = await previewImport(store, profile);
@@ -154,7 +241,7 @@ export async function runSetupShare(ctx: ExtensionCommandContext, agentDir: stri
     return;
   }
   const store = await FileStore.open(agentDir);
-  if (action === en.export) { await exportSetup(ctx, store); return; }
+  if (action === en.export) { await exportSetup(ctx, store, agentDir, homeDir); return; }
   if (action === en.recover) {
     if (!await confirmStep(ctx, en.recoveryTitle, en.recoveryWarning)) return;
     const locked = await store.hasDirectory('setup-share/lock');

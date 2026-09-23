@@ -4,6 +4,7 @@ import { validatePackages, type PortablePackage } from './packages.ts';
 import { validatePreferences, type PortablePreferences } from './preferences.ts';
 import { validateKeybindings, type PortableKeybindings } from './keybindings.ts';
 import { ProfileError, requireRecord, requireDataArray } from './validation.ts';
+import { validateTransferReport, type TransferReport } from './transfer-report.ts';
 export { ProfileError, type ProfileErrorCode } from './validation.ts';
 
 export const PROFILE_LIMITS = Object.freeze({
@@ -17,6 +18,18 @@ export const PROFILE_LIMITS = Object.freeze({
 });
 
 const RESOURCE_KINDS = ['extension', 'skill', 'prompt', 'theme', 'agent'] as const;
+const SENSITIVE_FILES = new Set(['auth.json', 'trust.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json', '.npmrc', 'credentials.json', 'credentials']);
+const SSH_KEY_NAME = /^id_(?:rsa|dsa|ecdsa|ed25519|xmss)(?:_sk)?(?:\.pub)?$/i;
+const SENSITIVE_DIRS = new Set(['sessions', 'history', 'logs', 'node_modules', '.ssh', '.aws', '.gnupg']);
+const OPERATIONAL_ROOTS = new Set(['cache', 'caches', 'runs', 'missions', 'automations']);
+export function assertPortableResourceRoot(root: string): void {
+  if (typeof root !== 'string' || root.includes('\0') || root.split(/[\\/]/).some(segment => {
+    const name = segment.toLowerCase();
+    return SENSITIVE_DIRS.has(name) || OPERATIONAL_ROOTS.has(name)
+      || SENSITIVE_FILES.has(name) || SSH_KEY_NAME.test(name) || name === '.env' || name.startsWith('.env.');
+  })) throw new ProfileError('invalid-path', 'root');
+}
+
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 export type ResourceEncoding = 'utf8' | 'base64';
 export type ResourceEntrypoints = Partial<Record<ResourceKind, string[]>>;
@@ -30,8 +43,9 @@ export interface ProfileResource {
 
 export interface ResourceProfile {
   format: 'pi-setup-share';
-  version: 1;
+  version: 1 | 2;
   resources: ProfileResource[];
+  transfer?: TransferReport;
   preferences?: PortablePreferences;
   keybindings?: PortableKeybindings;
   integrations?: PortableIntegrations;
@@ -46,13 +60,22 @@ function portablePath(value: unknown, field: string): asserts value is string {
       || /[\p{C}<>:"\\|?*]/u.test(value)) {
     throw new ProfileError('invalid-path', field);
   }
-  for (const segment of value.split('/')) {
+  const segments = value.split('/');
+  for (const segment of segments) {
     if (!segment || segment === '.' || segment === '..'
         || /^[ .]|[ .]$/.test(segment)
         || Buffer.byteLength(segment, 'utf8') > PROFILE_LIMITS.segmentBytes
         || /^(con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(segment)) {
       throw new ProfileError('invalid-path', field);
     }
+  }
+  const names = segments.map(segment => segment.toLowerCase());
+  const filename = names.at(-1) as string;
+  if (SENSITIVE_FILES.has(filename) || SSH_KEY_NAME.test(filename)
+      || filename === '.env' || filename.startsWith('.env.') || /\.(?:log|jsonl)$/.test(filename)
+      || names.slice(0, -1).some(segment => SENSITIVE_DIRS.has(segment))
+      || OPERATIONAL_ROOTS.has(names[0] as string)) {
+    throw new ProfileError('invalid-path', field);
   }
 }
 
@@ -101,9 +124,10 @@ function validateEntrypoints(value: unknown, resources: ProfileResource[]): Reso
 }
 
 export function validateProfile(value: unknown): ResourceProfile {
-  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings', 'integrations', 'packages', 'entrypoints']);
+  requireRecord(value, ['format', 'version', 'resources'], 'profile', ['preferences', 'keybindings', 'integrations', 'packages', 'entrypoints', 'transfer']);
   if (value.format !== 'pi-setup-share') throw new ProfileError('invalid-shape', 'format');
-  if (value.version !== 1) throw new ProfileError('unsupported-version', 'version');
+  if (value.version !== 1 && value.version !== 2) throw new ProfileError('unsupported-version', 'version');
+  if (Object.hasOwn(value, 'transfer') !== (value.version === 2)) throw new ProfileError('invalid-shape', 'transfer');
   requireDataArray(value.resources, PROFILE_LIMITS.resources, 'resources');
 
   const resources: ProfileResource[] = [];
@@ -139,12 +163,23 @@ export function validateProfile(value: unknown): ResourceProfile {
       }
     }
   }
-  const profile: ResourceProfile = { format: 'pi-setup-share', version: 1, resources };
+  const profile: ResourceProfile = { format: 'pi-setup-share', version: value.version, resources };
+  if (value.version === 2) profile.transfer = validateTransferReport(value.transfer);
   if (Object.hasOwn(value, 'preferences')) profile.preferences = validatePreferences(value.preferences);
   if (Object.hasOwn(value, 'keybindings')) profile.keybindings = validateKeybindings(value.keybindings);
   if (Object.hasOwn(value, 'integrations')) profile.integrations = validateIntegrations(value.integrations);
   if (Object.hasOwn(value, 'packages')) profile.packages = validatePackages(value.packages);
   if (Object.hasOwn(value, 'entrypoints')) profile.entrypoints = validateEntrypoints(value.entrypoints, resources);
+  if (profile.transfer) {
+    const present = [
+      profile.preferences && 'preferences', profile.keybindings && 'keybindings',
+      profile.integrations?.mcpServers && 'mcpServers', profile.integrations?.subagents && 'subagents',
+      profile.packages && 'packages',
+    ].filter((category): category is string => typeof category === 'string');
+    if (present.some(category => profile.transfer?.notExamined.includes(category as (typeof profile.transfer.notExamined)[number]))) {
+      throw new ProfileError('invalid-content', 'transfer.notExamined');
+    }
+  }
   return profile;
 }
 

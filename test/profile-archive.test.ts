@@ -32,6 +32,13 @@ test('creates a deterministic single-entry ZIP and returns the profile bytes', a
   assert.deepEqual(await parseProfileArchive(first), profile);
 });
 
+test('keeps the one-entry archive contract with an interior v2 report', async () => {
+  const v2 = Buffer.from(JSON.stringify({ format: 'pi-setup-share', version: 2, resources: [],
+    transfer: { scanned: [], partial: [], notExamined: ['project'], omissions: [], actions: ['review-omissions'] },
+  }));
+  assert.deepEqual(await parseProfileArchive(await createProfileArchive(v2)), v2);
+});
+
 test('accepts only one profile.json entry without archive comments', async () => {
   await assert.rejects(parseProfileArchive(await zip([['other.json', profile]])), { code: 'invalid-state' });
   await assert.rejects(parseProfileArchive(await zip([['profile.json', profile], ['extra.txt', Buffer.from('extra')]])), { code: 'invalid-state' });

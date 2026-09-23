@@ -41,7 +41,7 @@ test('validation copies records and arrays rather than exposing mutable input', 
 });
 
 test('rejects unsupported versions without exposing the imported value', () => {
-  for (const version of [0, 2, '1', true, null, 'synthetic-secret-marker']) {
+  for (const version of [0, 3, '1', true, null, 'synthetic-secret-marker']) {
     rejects({ ...profile(), version }, 'unsupported-version');
   }
   assert.throws(() => parseProfile('{"version":"synthetic-secret-marker"'), error => {
@@ -50,6 +50,20 @@ test('rejects unsupported versions without exposing the imported value', () => {
     assert.ok(!error.message.includes('synthetic-secret-marker'));
     return true;
   });
+});
+
+test('accepts a bounded transfer report only in v2 while retaining v1', () => {
+  const transfer = { scanned: ['preferences', 'extension'], partial: ['skill'], notExamined: ['project'],
+    omissions: [{ category: 'mcpServers', reason: 'unsupported', count: 1 }],
+    actions: ['configure-credentials', 'review-omissions'] };
+  assert.deepEqual(parseProfile(JSON.stringify({ ...profile(), version: 2, transfer })).transfer, transfer);
+  rejects({ ...profile(), version: 2 }, 'invalid-shape');
+  rejects({ ...profile(), transfer }, 'invalid-shape');
+  rejects({ ...profile(), version: 2, transfer: { ...transfer, secret: 'synthetic-secret' } }, 'invalid-shape');
+  rejects({ ...profile(), version: 2, transfer: { ...transfer, omissions: [{ category: 'mcpServers', reason: 'unsupported', count: -1 }] } }, 'invalid-content');
+  rejects({ ...profile(), version: 2, transfer: { ...transfer, actions: ['run-shell'] } }, 'invalid-content');
+  rejects({ ...profile(), version: 2, preferences: { quietStartup: true },
+    transfer: { ...transfer, notExamined: ['preferences'] } }, 'invalid-content');
 });
 
 test('rejects malformed envelopes and unknown fields, including prototype keys', () => {
@@ -93,8 +107,16 @@ test('rejects absolute, traversal, Windows device and misleading paths', () => {
   rejects(profile([resource(Array(4).fill('x'.repeat(70)).join('/'))]), 'invalid-path');
 });
 
+test('rejects known secret and operational resource paths before import', () => {
+  for (const path of ['.env', '.env.local', 'nested/.ENV.production', '.npmrc', 'nested/CREDENTIALS.json',
+    'nested/auth.json', 'sessions/state.md', 'nested/file.jsonl', '.aws/credentials', '.ssh/id_rsa',
+    'id_ecdsa', 'nested/ID_ECDSA', 'id_ed25519_sk', 'id_dsa', 'id_xmss']) {
+    rejects(profile([resource(path)]), 'invalid-path');
+  }
+});
+
 test('allows NFC Unicode, nested paths, and non-device names', () => {
-  for (const path of ['diseño/ejemplo.md', 'config.v1.json', 'console.md', 'COM10.md']) {
+  for (const path of ['diseño/ejemplo.md', 'config.v1.json', 'console.md', 'COM10.md', 'skill/automations/SKILL.md', 'skill/runs/SKILL.md']) {
     assert.equal(parseProfile(JSON.stringify(profile([resource(path)]))).resources[0]?.path, path);
   }
 });
