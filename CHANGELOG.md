@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Inventory known global extensions, skills, prompts, themes, and agents before selective export; keep manual file selection available.
+- Include a bounded sender inventory report and recipient actions in v2 profiles inside the existing one-entry ZIP.
+
+### Security and compatibility
+
+- Reject known credential and operational file paths during export and import, including sensitive manual roots; inventory limits are reported as partial coverage.
+- Continue reading v1 ZIP and plain JSON profiles. Released 0.2.0 readers cannot open the new v2 profile; no version or distribution channel has been approved for these changes.
+
 ## 0.2.0 — 2026-09-06
 
 ### Added

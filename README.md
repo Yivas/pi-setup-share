@@ -2,17 +2,17 @@
 
 Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Version 0.2.0 — ZIP profiles and portable MCP selection.** Export, inspection, selective import, separately confirmed installation/activation, resumable imports, and managed-file recovery are implemented. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
+**Published version 0.2.0 — ZIP profiles and portable MCP selection.** The development checkout additionally inventories known global resource locations and writes a v2 transfer report. These additions are not in the published package. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
 [Use in Pi](#use-in-pi) · [Changes](CHANGELOG.md) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
-## Current functionality
+## Functionality in this checkout
 
-- Validate an explicit, versioned JSON profile inside a one-entry ZIP, while still accepting legacy plain JSON.
+- Validate a v2 JSON profile and sender report inside a one-entry ZIP, while still accepting v1 ZIP and plain JSON profiles.
 - Reject unsupported fields, malformed contents, non-portable paths, and conflicting destinations.
 - Bound JSON size, nesting, resource count, and decoded content size.
 - Project explicitly selected preferences and namespaced keybindings without copying execution settings, trust, telemetry, or host defaults.
-- Read selected text/binary files with bounded reads, link rejection, cancellation, and file-change checks.
+- Inventory names from known global Pi and user-agent resource locations, then read only selected text/binary files with bounded reads, link rejection, cancellation, and file-change checks.
 - Project inactive MCP definitions, minimal subagent settings, and pinned package descriptors without connecting or installing.
 - Serialize explicit selections and preview configuration conflicts without filesystem effects.
 - Back up, apply, restore, and recover bounded managed-file transactions with consent and change checks.
@@ -31,11 +31,11 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-`npm run check` runs TypeScript checking and the Node.js test suite. Node's type stripping alone does not check types. CI is configured for Windows, macOS, and Linux on Node 22.19.0 and 24; see [actual workflow results](https://github.com/Yivas/pi-setup-share/actions/workflows/ci.yml) for verification.
+`npm run check` runs TypeScript checking and the Node.js test suite. Node's type stripping alone does not check types. CI is configured for Windows, macOS, and Linux on Node 22.19.0 and 24; see [actual workflow results](https://github.com/Yivas/pi-setup-share/actions/workflows/ci.yml) for verification of each commit. The local synthetic checks do not establish that a specific MCP server or third-party package works on another machine.
 
 ## Use in Pi
 
-Use Pi 0.85.0. Install the public npm package globally in Pi:
+Use Pi 0.85.0. The published 0.2.0 package supports the existing ZIP/v1 flow, **not** v2 reports or automatic resource inventory. To use the unreleased checkout, load `./src/index.ts` from this directory in an isolated Pi instance. For the published package:
 
 ```sh
 pi install npm:pi-setup-share@0.2.0
@@ -57,29 +57,35 @@ pi --no-session --no-context-files --no-extensions -e ./src/index.ts
 
 The command uses Pi's native theme and keyboard controls; it does not require a model request. It is TUI-only, not an RPC or print-mode tool. The tested component sizes are 80×24 and 120×40.
 
-For a disposable first run, set `PI_CODING_AGENT_DIR` to a fresh temporary directory before starting Pi. On macOS/Linux:
+For a disposable first run of the development checkout, isolate both Pi's agent directory and the home directory used for `.agents` discovery. On macOS/Linux:
 
 ```sh
-PI_CODING_AGENT_DIR="$(mktemp -d)" pi --no-session --no-context-files --no-extensions -e ./src/index.ts
+TEMP_HOME="$(mktemp -d)"
+mkdir "$TEMP_HOME/pi"
+HOME="$TEMP_HOME" PI_CODING_AGENT_DIR="$TEMP_HOME/pi" pi --no-session --no-context-files --no-extensions -e ./src/index.ts
 ```
 
 On PowerShell:
 
 ```powershell
-$previous = $env:PI_CODING_AGENT_DIR
+$previousAgent = $env:PI_CODING_AGENT_DIR
+$previousHome = $env:USERPROFILE
 try {
-    $env:PI_CODING_AGENT_DIR = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
-    New-Item -ItemType Directory $env:PI_CODING_AGENT_DIR | Out-Null
+    $temporaryHome = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+    $env:USERPROFILE = $temporaryHome
+    $env:PI_CODING_AGENT_DIR = Join-Path $temporaryHome 'pi'
+    New-Item -ItemType Directory $env:PI_CODING_AGENT_DIR -Force | Out-Null
     pi --no-session --no-context-files --no-extensions -e ./src/index.ts
 } finally {
-    $env:PI_CODING_AGENT_DIR = $previous
+    $env:PI_CODING_AGENT_DIR = $previousAgent
+    $env:USERPROFILE = $previousHome
 }
 ```
 
 The temporary directory is retained for inspection. Do not delete it while an operation is running.
 
-- **Export:** choose global categories, then individual items. Everything starts unchecked. MCP selection includes **Select all portable MCP servers**; nonportable servers are named locally with a safe reason but are not copied. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. Resource files require an explicit root, type, relative filename, and optional entrypoint. No directory is copied wholesale. Review the selected values and safe omission reasons before confirming a new ZIP.
-- **Inspect:** read a chosen profile ZIP or legacy JSON and show configuration/resource metadata without staging, installing, extracting files, or loading it. Executable resource contents are not displayed; review those in the original file before trusting them.
+- **Export (development checkout):** choose global categories, then individual items. Everything starts unchecked. MCP selection includes **Select all portable MCP servers**; nonportable servers are named locally with a safe reason but are not copied. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. You can inventory extensions, skills, prompts, themes, and agents in the global Pi directory and `~/.agents` locations, select candidates and support files, resolve duplicate names by source, and optionally add files from an explicit root. The scanner looks at names only; selected files are read after selection. No directory is copied wholesale. Review the selected values, inventory gaps, and safe omission counts before confirming a new ZIP.
+- **Inspect:** read a chosen profile ZIP or legacy JSON and show configuration/resource metadata and any sender-supplied report without staging, installing, extracting files, or loading it. The report does not prove completeness or safety. Executable resource contents are not displayed; review those in the original file before trusting them.
 - **Import:** select incoming items, review, then separately confirm staging, installation, and activation. **Later** leaves the import inactive and resumable. If packages are present, installation must finish before this assistant offers activation.
 - **Resume:** choose a saved import by ID, verified phase, resource/package counts, and next action. An incomplete package attempt requires a fresh import; it is never retried or cleaned up automatically.
 - **Restore:** reverse this import's managed file changes without overwriting later edits. Installed files, running code, and script effects remain. Reload or restart Pi afterward.
@@ -87,18 +93,18 @@ The temporary directory is retained for inspection. Do not delete it while an op
 
 Activation writes global settings and references. Some consumers may react immediately; use `/reload` deliberately when ready to load other resources. The assistant never reloads automatically. Cancellation waits for in-flight work to settle; it does not undo earlier confirmed steps or external script effects.
 
-Profile paths must be absolute, local filesystem paths without shell quoting. Existing outputs are never overwritten, including concurrent exports. Links, nonregular files, known operational paths, and invalid UTF-8 are rejected. An interrupted export can leave a complete or incomplete file; use a new filename to retry. Import discovery bounds directory entries to 4,096 and available manifests to 128; each selected status revalidates its manifest, profile, staged files, and installed paths.
+Profile paths must be absolute, local filesystem paths without shell quoting. Existing outputs are never overwritten, including concurrent exports. Links, nonregular files, known operational roots/names, and invalid UTF-8 are rejected. An interrupted export can leave a complete or incomplete file; use a new filename to retry. Import discovery bounds directory entries to 4,096 and available manifests to 128; each selected status revalidates its manifest, profile, staged files, and installed paths.
 
 The assistant does not send profiles or target configuration to models, session entries, telemetry, or external services. Package installation is the separately consented network/execution boundary. Terminal content remains subject to any terminal recording or other extensions you have enabled.
 
 ## Draft resource format
 
-A new export contains one file named `profile.json`. Its JSON structure remains version 1; the ZIP is only a bounded transport container. This synthetic example contains a prompt as data, not an instruction to execute:
+A development-checkout export contains one file named `profile.json` with interior version 2 and a bounded `transfer` report. The published 0.2.0 reader rejects version 2; the checkout reads both versions 1 and 2, including legacy plain JSON. The ZIP transport still contains only one member. This synthetic example contains a prompt as data, not an instruction to execute:
 
 ```json
 {
   "format": "pi-setup-share",
-  "version": 1,
+  "version": 2,
   "resources": [
     {
       "kind": "prompt",
@@ -106,11 +112,20 @@ A new export contains one file named `profile.json`. Its JSON structure remains 
       "encoding": "utf8",
       "content": "Synthetic example"
     }
-  ]
+  ],
+  "transfer": {
+    "scanned": ["prompt"],
+    "partial": [],
+    "notExamined": ["project"],
+    "omissions": [{ "category": "prompt", "reason": "unselected", "count": 1 }],
+    "actions": ["review-resources", "review-omissions"]
+  }
 }
 ```
 
 [`parseProfile(text)`](src/profile.ts) bounds the input before JSON parsing, then validates it. `validateProfile(value)` validates an already parsed JSON value and returns copied resource records. Failures are `ProfileError` instances with a machine-readable `code` and `field`; imported values are not included in error messages.
+
+The report contains only known category/reason/action codes and bounded counts, never names or values of excluded files. It describes the sender's inventory before the recipient selects items, not the complete contents of either computer. Unknown settings, project resources, standalone Markdown skills, external tools and file locations outside the known roots are not inventoried. Candidate counts are capped at 256, each root scan examines up to 1,024 entries, checks a cooperative five-second budget, and nested discovery stops after four levels. A limit is reported as partial coverage; an in-flight filesystem call cannot be interrupted by the clock check. The receiver still needs to configure accounts and environment values, install tools, check endpoints and models, and review code, licenses and omissions. No preview installs or activates anything.
 
 Resource kinds are `extension`, `skill`, `prompt`, `theme`, and `agent`. They identify separate destination namespaces; they do not authorize loading anything. Content uses lossless `utf8` or canonical padded `base64`. The format is under development and may change in future releases.
 
@@ -122,7 +137,7 @@ Preferences cover bounded display, thinking, compaction, branch-summary, image, 
 
 Keybindings use Pi 0.85.0 namespaced built-in action IDs. Missing bindings preserve host defaults; `[]` deliberately disables that action's shortcuts. Each action allows at most 16 keys, each at most 64 characters. Duplicate modifier/alias combinations within an action are rejected. Shared keys across actions produce a projection warning because different contexts can legitimately share shortcuts. Terminal support and contextual conflicts still need receiver review; this is not a keyboard-compatibility guarantee. Literal `+` keys and modified F1–F12 keys are unsupported by this draft because Pi 0.85.0 cannot match those bindings. Only the stable `regular` TUI mode is included in preferences.
 
-[`exportResources(root, selection, signal?)`](src/files.ts) reads only explicitly listed `{kind, path}` entries beneath an absolute root chosen by the caller; it does not scan folders or write a profile. It rejects symlink/junction descendants, linked roots, hardlinked files, and known operational filenames such as `auth.json`, `settings.json`, and `trust.json`. Session/history/log directories, `node_modules`, `.log`, and `.jsonl` files are excluded. Structured configuration must go through its dedicated projection rather than a resource copy. These filename exclusions cannot detect secrets in arbitrary resource content.
+[`exportResources(root, selection, signal?)`](src/files.ts) reads only explicitly listed `{kind, path}` entries beneath an absolute root chosen by the caller; it does not scan folders or write a profile. It rejects symlink/junction descendants, linked roots, hardlinked files, and known operational filenames such as `auth.json`, `.env`, `.npmrc`, `settings.json`, and `trust.json`. The chosen root and its canonical ancestors cannot be known operational locations such as `sessions`, `.ssh` or `node_modules`; session/history/log directories and `.log`/`.jsonl` files are excluded. Structured configuration must go through its dedicated projection rather than a resource copy. These filename exclusions cannot detect secrets in arbitrary resource content.
 
 Reads check identity, size, and timestamps before and after, and enforce both decoded and serialized size limits. The root is canonicalized, so OS-managed ancestor aliases can resolve normally. This is not an atomic snapshot or protection against a hostile process racing filesystem changes or a filesystem providing unreliable metadata. Filesystem errors expose a code and selection index, not local paths. The operation fails rather than returning an incomplete selection.
 
