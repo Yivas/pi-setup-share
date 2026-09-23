@@ -81,6 +81,25 @@ test('literal preview checks forced ZIP64 without extracting or returning paths'
   }, true);
 });
 
+test('literal preview reads a synthetic ZIP64 directory with 65,536 physical entries', { timeout: 120_000 }, async () => {
+  const count = 65_535;
+  const empty = Buffer.alloc(0);
+  const emptyHash = createHash('sha256').update(empty).digest('hex');
+  const entries = Array.from({ length: count }, (_, index) => ({
+    path: `f${String(index + 1).padStart(6, '0')}`, type: 'file', mode: 0o600,
+    size: 0, sha256: emptyHash,
+  }));
+  const archiveEntries = [{ name: 'manifest.json', bytes: Buffer.from(JSON.stringify({
+    ...manifest, totalBytes: 0, entries,
+  })) }];
+  for (let index = 1; index <= count; index++) {
+    archiveEntries.push({ name: `payload/${String(index).padStart(6, '0')}`, bytes: empty });
+  }
+  await fixture(archiveEntries, async path => {
+    assert.equal((await previewLiteralArchive(path)).files, count);
+  });
+});
+
 test('literal preview rejects extended timestamps outside the generated format', async () => {
   await fixture(normalEntries(), async path => {
     await assert.rejects(previewLiteralArchive(path), { code: 'invalid-state' });
