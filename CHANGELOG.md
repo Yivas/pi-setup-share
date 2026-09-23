@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-09-23
+
 ### Added
 
 - Inventory known global extensions, skills, prompts, themes, and agents before selective export; keep manual file selection available.
@@ -10,7 +12,7 @@
 ### Security and compatibility
 
 - Reject known credential and operational file paths during export and import, including sensitive manual roots; inventory limits are reported as partial coverage.
-- Continue reading v1 ZIP and plain JSON profiles. Released 0.2.0 readers cannot open the new v2 profile; no version or distribution channel has been approved for these changes.
+- Continue reading v1 ZIP and plain JSON profiles. Receivers running 0.2.0 cannot open v2 profiles; update both computers to 0.3.0 before sharing a new export.
 
 ## 0.2.0 — 2026-09-06
 

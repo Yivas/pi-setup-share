@@ -2,7 +2,7 @@
 
 Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Published version 0.2.0 — ZIP profiles and portable MCP selection.** The development checkout additionally inventories known global resource locations and writes a v2 transfer report. These additions are not in the published package. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
+**Version 0.3.0 — selective global resource inventory and v2 transfer reports.** Update both sender and receiver before sharing a v2 profile: version 0.2.0 cannot read it. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
 [Use in Pi](#use-in-pi) · [Changes](CHANGELOG.md) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -35,10 +35,10 @@ npm run check
 
 ## Use in Pi
 
-Use Pi 0.85.0. The published 0.2.0 package supports the existing ZIP/v1 flow, **not** v2 reports or automatic resource inventory. To use the unreleased checkout, load `./src/index.ts` from this directory in an isolated Pi instance. For the published package:
+Use Pi 0.85.0. Version 0.3.0 adds global resource inventory and v2 reports. To use a development checkout, load `./src/index.ts` from this directory in an isolated Pi instance. To install the versioned package:
 
 ```sh
-pi install npm:pi-setup-share@0.2.0
+pi install npm:pi-setup-share@0.3.0
 ```
 
 Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives containing exactly `profile.json`; inspection and import also accept plain JSON profiles created by 0.1.x.
@@ -46,7 +46,7 @@ Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives con
 To try the package for one interactive session without adding it to global settings, run:
 
 ```sh
-pi -e npm:pi-setup-share@0.2.0
+pi -e npm:pi-setup-share@0.3.0
 ```
 
 You can also work from a checkout or extract the source archive from [GitHub Releases](https://github.com/Yivas/pi-setup-share/releases). From the package directory, load the extension directly with:
@@ -84,7 +84,7 @@ try {
 
 The temporary directory is retained for inspection. Do not delete it while an operation is running.
 
-- **Export (development checkout):** choose global categories, then individual items. Everything starts unchecked. MCP selection includes **Select all portable MCP servers**; nonportable servers are named locally with a safe reason but are not copied. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. You can inventory extensions, skills, prompts, themes, and agents in the global Pi directory and `~/.agents` locations, select candidates and support files, resolve duplicate names by source, and optionally add files from an explicit root. The scanner looks at names only; selected files are read after selection. No directory is copied wholesale. Review the selected values, inventory gaps, and safe omission counts before confirming a new ZIP.
+- **Export:** choose global categories, then individual items. Everything starts unchecked. MCP selection includes **Select all portable MCP servers**; nonportable servers are named locally with a safe reason but are not copied. Only `settings.json`, `keybindings.json`, or `mcp.json` for a chosen category is read; project settings are never merged. You can inventory extensions, skills, prompts, themes, and agents in the global Pi directory and `~/.agents` locations, select candidates and support files, resolve duplicate names by source, and optionally add files from an explicit root. The scanner looks at names only; selected files are read after selection. No directory is copied wholesale. Review the selected values, inventory gaps, and safe omission counts before confirming a new ZIP.
 - **Inspect:** read a chosen profile ZIP or legacy JSON and show configuration/resource metadata and any sender-supplied report without staging, installing, extracting files, or loading it. The report does not prove completeness or safety. Executable resource contents are not displayed; review those in the original file before trusting them.
 - **Import:** select incoming items, review, then separately confirm staging, installation, and activation. **Later** leaves the import inactive and resumable. If packages are present, installation must finish before this assistant offers activation.
 - **Resume:** choose a saved import by ID, verified phase, resource/package counts, and next action. An incomplete package attempt requires a fresh import; it is never retried or cleaned up automatically.
@@ -99,7 +99,7 @@ The assistant does not send profiles or target configuration to models, session 
 
 ## Draft resource format
 
-A development-checkout export contains one file named `profile.json` with interior version 2 and a bounded `transfer` report. The published 0.2.0 reader rejects version 2; the checkout reads both versions 1 and 2, including legacy plain JSON. The ZIP transport still contains only one member. This synthetic example contains a prompt as data, not an instruction to execute:
+A 0.3.0 export contains one file named `profile.json` with interior version 2 and a bounded `transfer` report. The 0.2.0 reader rejects version 2; 0.3.0 reads both versions 1 and 2, including legacy plain JSON. The ZIP transport still contains only one member. This synthetic example contains a prompt as data, not an instruction to execute:
 
 ```json
 {

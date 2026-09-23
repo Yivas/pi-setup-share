@@ -2,7 +2,8 @@
 
 | Line | Support |
 | --- | --- |
-| 0.2.x | Security reports accepted; fixes target the latest patch |
+| 0.3.x | Security reports accepted; fixes target the latest patch |
+| 0.2.x | Reports accepted; upgrade to the current line when possible |
 | 0.1.x | Reports accepted; upgrade to the current line when possible |
 | Current default branch | Development reports accepted |
 
@@ -12,7 +13,7 @@ Include the commit, Node.js version, operating system, a minimal synthetic repro
 
 ## Current boundaries
 
-The core exports selected resources, stages imports, backs up and restores managed files, and separately installs and activates packages. The native `/setup-share` assistant connects these operations with explicit selections and separate confirmations. Development-checkout exports are ZIP archives containing one v2 `profile.json` and a sender-supplied inventory report; v1 ZIP and legacy plain JSON remain readable. The published 0.2.0 package cannot read v2 reports. Archive parsing is bounded before and during decompression and never extracts members to disk. Validation itself performs no filesystem or network actions. It checks format and lexical paths, not signatures, secret absence, or whether resource code and prompts are trustworthy. The format remains a development draft.
+The core exports selected resources, stages imports, backs up and restores managed files, and separately installs and activates packages. The native `/setup-share` assistant connects these operations with explicit selections and separate confirmations. Version 0.3.0 exports ZIP archives containing one v2 `profile.json` and a sender-supplied inventory report; v1 ZIP and legacy plain JSON remain readable. Version 0.2.0 cannot read v2 reports. Archive parsing is bounded before and during decompression and never extracts members to disk. Validation itself performs no filesystem or network actions. It checks format and lexical paths, not signatures, secret absence, or whether resource code and prompts are trustworthy. The format remains a development draft.
 
 Installation is separate code-execution consent. A per-import directory is not a sandbox: package managers and third-party scripts retain your permissions. Installed files and external script effects are outside rollback. Activation requires another confirmation and may affect consumers before a reload.
 
