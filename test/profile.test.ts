@@ -110,7 +110,8 @@ test('rejects absolute, traversal, Windows device and misleading paths', () => {
 test('rejects known secret and operational resource paths before import', () => {
   for (const path of ['.env', '.env.local', 'nested/.ENV.production', '.npmrc', 'nested/CREDENTIALS.json',
     'nested/auth.json', 'sessions/state.md', 'nested/file.jsonl', '.aws/credentials', '.ssh/id_rsa',
-    'id_ecdsa', 'nested/ID_ECDSA', 'id_ed25519_sk', 'id_dsa', 'id_xmss']) {
+    'id_ecdsa', 'nested/ID_ECDSA', 'id_ed25519_sk', 'id_dsa', 'id_xmss',
+    'credentials/current.md', 'nested/secrets/current.md']) {
     rejects(profile([resource(path)]), 'invalid-path');
   }
 });

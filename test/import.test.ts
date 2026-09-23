@@ -31,7 +31,7 @@ async function native(root: string): Promise<void> {
 
 test('staging rejects sensitive paths from external profiles before any destination write', async () => {
   await fixture(async (root, store) => {
-    for (const path of ['.env.production', 'id_ecdsa', '.npmrc', 'sessions/current.md']) {
+    for (const path of ['.env.production', 'id_ecdsa', '.npmrc', 'sessions/current.md', 'credentials/current.md']) {
       await assert.rejects(previewImport(store, { ...empty,
         resources: [{ kind: 'prompt', path, encoding: 'utf8', content: 'synthetic' }],
       }), { code: 'invalid-path' });

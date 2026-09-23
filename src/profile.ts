@@ -20,7 +20,7 @@ export const PROFILE_LIMITS = Object.freeze({
 const RESOURCE_KINDS = ['extension', 'skill', 'prompt', 'theme', 'agent'] as const;
 const SENSITIVE_FILES = new Set(['auth.json', 'trust.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json', '.npmrc', 'credentials.json', 'credentials']);
 const SSH_KEY_NAME = /^id_(?:rsa|dsa|ecdsa|ed25519|xmss)(?:_sk)?(?:\.pub)?$/i;
-const SENSITIVE_DIRS = new Set(['sessions', 'history', 'logs', 'node_modules', '.ssh', '.aws', '.gnupg']);
+const SENSITIVE_DIRS = new Set(['sessions', 'history', 'logs', 'node_modules', '.ssh', '.aws', '.gnupg', 'credentials', 'secrets']);
 const OPERATIONAL_ROOTS = new Set(['cache', 'caches', 'runs', 'missions', 'automations']);
 export function assertPortableResourceRoot(root: string): void {
   if (typeof root !== 'string' || root.includes('\0') || root.split(/[\\/]/).some(segment => {

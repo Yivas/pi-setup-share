@@ -110,18 +110,20 @@ test('bounds escaped serialized JSON separately from decoded content', async () 
 });
 
 test('rejects known operational files even when explicitly selected', async () => {
-  for (const path of ['auth.json', 'nested/TRUST.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json', '.env', 'nested/.ENV.local', '.npmrc', 'nested/CREDENTIALS.json', '.aws/credentials', '.ssh/id_rsa', 'id_ecdsa', 'nested/ID_ECDSA', 'id_ed25519_sk', 'sessions/session.json', 'log.log', 'events.jsonl', 'node_modules/package/index.js']) {
+  for (const path of ['auth.json', 'nested/TRUST.json', 'settings.json', 'keybindings.json', 'models.json', 'mcp.json', '.env', 'nested/.ENV.local', '.npmrc', 'nested/CREDENTIALS.json', '.aws/credentials', '.ssh/id_rsa', 'id_ecdsa', 'nested/ID_ECDSA', 'id_ed25519_sk', 'credentials/current.md', 'secrets/current.md', 'sessions/session.json', 'log.log', 'events.jsonl', 'node_modules/package/index.js']) {
     await assert.rejects(exportResources(join(tmpdir(), 'not-created-synthetic-root'), [{ kind: 'extension', path }]), ProfileError);
   }
 });
 
 test('manual roots inside known operational directories cannot bypass path exclusions', async () => {
   await fixture(async parent => {
-    const root = join(parent, 'sessions');
-    await mkdir(root);
-    await writeFile(join(root, 'current.md'), 'synthetic session marker');
-    await assert.rejects(exportResources(root, [{ kind: 'prompt', path: 'current.md' }]), { code: 'invalid-path' });
-    await assert.rejects(discoverResources(root, 'prompt'), { code: 'invalid-path' });
+    for (const name of ['sessions', 'credentials', 'secrets']) {
+      const root = join(parent, name);
+      await mkdir(root);
+      await writeFile(join(root, 'current.md'), 'synthetic operational marker');
+      await assert.rejects(exportResources(root, [{ kind: 'prompt', path: 'current.md' }]), { code: 'invalid-path' });
+      await assert.rejects(discoverResources(root, 'prompt'), { code: 'invalid-path' });
+    }
   });
 });
 
