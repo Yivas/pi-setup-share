@@ -3,10 +3,12 @@
 // an interrupted transition can be recognized instead of guessed. Nothing here swaps anything yet: the
 // post-exit auxiliary state machine builds on this contract.
 import { Buffer } from 'node:buffer';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { type Stats } from 'node:fs';
-import { lstat, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, rmdir, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
+import { previewReceiverBackup, writeReceiverBackup } from './literal-backup.ts';
+import { digestTree } from './literal-writer.ts';
 import { StorageError } from './storage.ts';
 
 export const SWAP_FORMAT = 'pi-setup-share-literal-swap' as const;
@@ -25,6 +27,8 @@ export type SwapJournal = Readonly<{
   backup: string;
   agentIdentity: SwapIdentity;
   stagingIdentity: SwapIdentity;
+  agentDigest: string;
+  stagedDigest: string;
   createdAt: string;
   updatedAt: string;
   note?: string;
@@ -49,6 +53,11 @@ function checkedIdentity(value: unknown): SwapIdentity {
   if (typeof dev !== 'string' || typeof ino !== 'string' || typeof mtimeMs !== 'string'
       || !/^\d+$/.test(dev) || !/^\d+$/.test(ino) || !/^\d+(?:\.\d+)?$/.test(mtimeMs)) invalid();
   return Object.freeze({ dev, ino, mtimeMs });
+}
+
+function checkedDigest(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) invalid();
+  return value;
 }
 
 // The journal is data, so it is validated as strictly as any other persisted contract.
@@ -77,6 +86,8 @@ export function validateSwapJournal(value: unknown): SwapJournal {
     agentDir, staging, rescue, backup,
     agentIdentity: checkedIdentity(candidate.agentIdentity),
     stagingIdentity: checkedIdentity(candidate.stagingIdentity),
+    agentDigest: checkedDigest(candidate.agentDigest),
+    stagedDigest: checkedDigest(candidate.stagedDigest),
     createdAt: candidate.createdAt as string, updatedAt: candidate.updatedAt as string,
     ...(note === undefined ? {} : { note }),
   });
@@ -145,11 +156,14 @@ export async function createSwapPlan(agentDir: string, staging: string): Promise
   for (const path of [rescue, backup, journalPath]) {
     if (await lstat(path).then(() => true, () => false)) unsafe();
   }
+  const agentDigest = await digestTree(root);
+  const stagedDigest = await digestTree(staged);
   const now = new Date().toISOString();
   const journal: SwapJournal = Object.freeze({
     format: SWAP_FORMAT, version: 1, id, state: 'staged',
     agentDir: root, staging: staged, rescue, backup,
     agentIdentity: captureIdentity(rootStats), stagingIdentity: captureIdentity(stagingStats),
+    agentDigest: agentDigest.digest, stagedDigest: stagedDigest.digest,
     createdAt: now, updatedAt: now,
   });
   await writeSwapJournal(journalPath, journal);
@@ -158,13 +172,162 @@ export async function createSwapPlan(agentDir: string, staging: string): Promise
 
 // Re-reads the journal and the filesystem before any transition; a mismatch is never guessed away.
 export async function advanceSwapJournal(plan: SwapPlan, state: SwapState, note?: string): Promise<SwapJournal> {
-  const bytes = await readFile(plan.journalPath).catch(() => invalid());
+  return advanceAt(plan.journalPath, plan.journal.id, state, note);
+}
+
+async function advanceAt(journalPath: string, expectedId: string, state: SwapState, note?: string): Promise<SwapJournal> {
+  const bytes = await readFile(journalPath).catch(() => invalid());
   const current = validateSwapJournal(JSON.parse(bytes.toString('utf8')));
-  if (current.id !== plan.journal.id) invalid();
+  if (current.id !== expectedId) invalid();
   const next: SwapJournal = Object.freeze({
     ...current, state, updatedAt: new Date().toISOString(),
     ...(note === undefined ? {} : { note }),
   });
-  await writeSwapJournal(plan.journalPath, next);
+  await writeSwapJournal(journalPath, next);
   return next;
+}
+
+export type SwapProgress = Readonly<{ state: SwapState; note?: string }>;
+export type SwapRunOptions = Readonly<{
+  signal?: AbortSignal;
+  // Persist or display a transition; the auxiliary uses it for progress and the tests inject failures.
+  onTransition?: (progress: SwapProgress) => Promise<void> | void;
+}>;
+export type SwapReceipt = Readonly<{ format: typeof SWAP_FORMAT; version: 1; id: string; state: SwapState;
+  agentDir: string; rescue: string; backup: string; digest: string; at: string; note?: string }>;
+
+function checkAbort(signal?: AbortSignal): void { if (signal?.aborted) throw new StorageError('aborted'); }
+
+async function writeJsonAtomic(path: string, value: unknown, limit = JOURNAL_BYTES): Promise<void> {
+  const bytes = Buffer.from(JSON.stringify(value), 'utf8');
+  if (bytes.length > limit) throw new StorageError('limit-exceeded');
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  let handle;
+  try {
+    handle = await open(temporary, 'wx', 0o600);
+    await handle.write(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, path);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+    if (error instanceof StorageError) throw error;
+    throw new StorageError('unavailable');
+  }
+}
+
+async function transition(plan: SwapPlan, state: SwapState, options: SwapRunOptions, note?: string): Promise<SwapJournal> {
+  const journal = await advanceAt(plan.journalPath, plan.journal.id, state, note);
+  await options.onTransition?.({ state, ...(note === undefined ? {} : { note }) });
+  return journal;
+}
+
+async function fail(plan: SwapPlan, options: SwapRunOptions, note: string): Promise<never> {
+  await transition(plan, 'recovery-required', options, note);
+  throw new StorageError('recovery-required');
+}
+
+async function exists(path: string): Promise<boolean> {
+  return lstat(path).then(() => true, () => false);
+}
+
+// The post-exit auxiliary: verify the trees, back the receiver up and verify it, then two renames with
+// a verification after each. It never deletes the original, the backup or the rescue copy, and any
+// doubt ends as recovery-required instead of a reported success.
+export async function runSwap(plan: SwapPlan, options: SwapRunOptions = {}): Promise<SwapJournal> {
+  const lockPath = `${plan.journalPath}.lock`;
+  try { await mkdir(lockPath, { mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') throw new StorageError('busy');
+    throw new StorageError('unavailable');
+  }
+  try {
+    checkAbort(options.signal);
+    const journal = await readSwapJournal(plan.journalPath);
+    if (journal.id !== plan.journal.id) invalid();
+    if (journal.state !== 'staged' && journal.state !== 'armed') invalid();
+    await transition(plan, 'exited', options);
+    const agentStats = await lstat(journal.agentDir).catch(() => invalid());
+    const stagingStats = await lstat(journal.staging).catch(() => invalid());
+    if (!identityMatches(journal.agentIdentity, agentStats) || !identityMatches(journal.stagingIdentity, stagingStats)) {
+      await fail(plan, options, 'trees changed since the plan was written');
+    }
+    if ((await digestTree(journal.agentDir)).digest !== journal.agentDigest) {
+      await fail(plan, options, 'agent directory changed since the plan was written');
+    }
+    try {
+      const backupOptions = options.signal ? { signal: options.signal } : {};
+      await writeReceiverBackup(journal.agentDir, journal.backup, backupOptions);
+      await previewReceiverBackup(journal.backup, backupOptions);
+    } catch (error) {
+      if (error instanceof StorageError && error.code === 'aborted') throw error;
+      await fail(plan, options, 'receiver backup could not be created and verified');
+    }
+    await transition(plan, 'backed-up', options);
+    await rename(journal.agentDir, journal.rescue);
+    await transition(plan, 'old-moved', options);
+    if (!identityMatches(journal.agentIdentity, await lstat(journal.rescue))) {
+      await fail(plan, options, 'rescue does not hold the original tree');
+    }
+    try {
+      await rename(journal.staging, journal.agentDir);
+    } catch (error) {
+      // The root is missing at this point, so try to put the original back before reporting.
+      try {
+        await rename(journal.rescue, journal.agentDir);
+        await transition(plan, 'recovery-required', options, 'swap failed after the first rename; original restored');
+      } catch {
+        await transition(plan, 'recovery-required', options, 'swap failed after the first rename; original preserved at the rescue path');
+      }
+      throw error instanceof StorageError ? error : new StorageError('invalid-state');
+    }
+    await transition(plan, 'new-moved', options);
+    const installed = await digestTree(journal.agentDir);
+    if (installed.digest !== journal.stagedDigest) {
+      await fail(plan, options, 'installed tree does not match the staged tree');
+    }
+    await transition(plan, 'verified', options);
+    const receipt: SwapReceipt = {
+      format: SWAP_FORMAT, version: 1, id: journal.id, state: 'success', agentDir: journal.agentDir,
+      rescue: journal.rescue, backup: journal.backup, digest: installed.digest, at: new Date().toISOString(),
+    };
+    await writeJsonAtomic(`${plan.journalPath}.receipt.json`, receipt);
+    return await transition(plan, 'success', options);
+  } finally {
+    // A stale lock is a state for the operator to confirm; it is never removed silently here.
+    await rmdir(lockPath).catch(() => undefined);
+  }
+}
+
+// Conservative recovery: it compares the journal with the filesystem, restores only when the identity
+// and digest prove it, and otherwise reports what it found without touching anything.
+export async function recoverSwap(journalPath: string, options: SwapRunOptions = {}): Promise<SwapJournal> {
+  checkAbort(options.signal);
+  const journal = await readSwapJournal(journalPath);
+  if (!await exists(journal.backup)) {
+    return advanceAt(journalPath, journal.id, 'recovery-required', 'no receiver backup found; nothing changed');
+  }
+  const agentPresent = await exists(journal.agentDir);
+  const rescuePresent = await exists(journal.rescue);
+  if (!agentPresent && rescuePresent) {
+    const rescueStats = await lstat(journal.rescue);
+    if (!identityMatches(journal.agentIdentity, rescueStats)) {
+      return advanceAt(journalPath, journal.id, 'recovery-required', 'rescue identity does not match the original tree');
+    }
+    await rename(journal.rescue, journal.agentDir);
+    if ((await digestTree(journal.agentDir)).digest !== journal.agentDigest) {
+      return advanceAt(journalPath, journal.id, 'recovery-required', 'restored tree does not match the original digest');
+    }
+    return advanceAt(journalPath, journal.id, 'recovery-required', 'original restored from the rescue path; backup retained');
+  }
+  if (agentPresent && rescuePresent) {
+    const installed = await digestTree(journal.agentDir).catch(() => undefined);
+    const note = installed?.digest === journal.stagedDigest
+      ? 'new tree installed and original preserved at the rescue path; backup retained'
+      : 'ambiguous on-disk state; nothing changed';
+    return advanceAt(journalPath, journal.id, 'recovery-required', note);
+  }
+  return advanceAt(journalPath, journal.id, 'recovery-required', 'agent directory present; nothing changed');
 }

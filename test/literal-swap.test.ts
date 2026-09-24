@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, readSwapJournal, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
+  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, readSwapJournal, recoverSwap, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
 } from '../src/literal-swap.ts';
+import { previewReceiverBackup } from '../src/literal-backup.ts';
+import { digestTree } from '../src/literal-writer.ts';
 import { StorageError } from '../src/storage.ts';
 import { lstat } from 'node:fs/promises';
 
@@ -87,5 +89,96 @@ test('writes journals atomically and reports unavailable paths without leaving t
     const stats = await lstat(plan.journalPath);
     assert.equal(stats.isFile(), true);
     assert.deepEqual(captureIdentity(await lstat(staging)), plan.stagingIdentity);
+  });
+});
+
+test('runs the deferred swap end to end and keeps every copy', async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    const journal = await runSwap(plan);
+    assert.equal(journal.state, 'success');
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":"replacement"}\n');
+    assert.equal(await readFile(join(journal.rescue, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal((await previewReceiverBackup(journal.backup)).files >= 1, true);
+    const receipt = JSON.parse(await readFile(`${plan.journalPath}.receipt.json`, 'utf8'));
+    assert.equal(receipt.state, 'success');
+    assert.equal(receipt.agentDir, agentDir);
+    assert.equal(receipt.digest, journal.stagedDigest);
+    assert.equal((await readdir(workspace)).some(name => name.endsWith('.lock')), false);
+    assert.deepEqual((await readdir(workspace)).filter(name => name.includes('.tmp')), []);
+  });
+});
+
+test('an interrupted transition leaves the last completed state and moves nothing', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await assert.rejects(runSwap(plan, { onTransition: ({ state }) => { if (state === 'backed-up') throw new Error('synthetic interruption'); } }));
+    const journal = await readSwapJournal(plan.journalPath);
+    assert.equal(journal.state, 'backed-up');
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await lstat(journal.rescue).then(() => true, () => false), false);
+    const recovered = await recoverSwap(plan.journalPath);
+    assert.equal(recovered.state, 'recovery-required');
+    assert.equal(recovered.note?.includes('nothing changed'), true);
+  });
+});
+
+test('recovery restores the original when the swap stopped between the renames', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await assert.rejects(runSwap(plan, { onTransition: ({ state }) => { if (state === 'old-moved') throw new Error('synthetic interruption'); } }));
+    const interrupted = await readSwapJournal(plan.journalPath);
+    assert.equal(interrupted.state, 'old-moved');
+    assert.equal(await lstat(agentDir).then(() => true, () => false), false);
+    assert.equal((await digestTree(interrupted.rescue)).digest, interrupted.agentDigest);
+    const recovered = await recoverSwap(plan.journalPath);
+    assert.equal(recovered.state, 'recovery-required');
+    assert.equal(recovered.note?.includes('original restored'), true);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await readFile(join(recovered.backup)).then(bytes => bytes.length > 0), true);
+  });
+});
+
+test('a failed second rename restores the original and reports recovery-required', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await assert.rejects(runSwap(plan, { onTransition: async ({ state }) => {
+      if (state === 'old-moved') {
+        await mkdir(agentDir, { recursive: true });
+        await writeFile(join(agentDir, 'blocker.txt'), 'synthetic blocker');
+      }
+    } }), StorageError);
+    const journal = await readSwapJournal(plan.journalPath);
+    assert.equal(journal.state, 'recovery-required');
+    assert.equal(journal.note?.includes('rescue path'), true);
+    assert.equal((await digestTree(journal.rescue)).digest, journal.agentDigest);
+  });
+});
+
+test('refuses to run while another swap holds the lock', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await mkdir(`${plan.journalPath}.lock`);
+    await assert.rejects(runSwap(plan), { code: 'busy' });
+    assert.equal((await readSwapJournal(plan.journalPath)).state, 'staged');
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+  });
+});
+
+test('recovery reports an installed tree without deleting anything', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    const journal = await readSwapJournal(plan.journalPath);
+    await writeFile(journal.backup, 'synthetic placeholder backup');
+    await lstat(agentDir);
+    const { rename } = await import('node:fs/promises');
+    await rename(agentDir, journal.rescue);
+    await rename(staging, agentDir);
+    const recovered = await recoverSwap(plan.journalPath);
+    assert.equal(recovered.state, 'recovery-required');
+    assert.equal(recovered.note?.includes('new tree installed'), true);
+    assert.equal(await lstat(journal.rescue).then(() => true, () => false), true);
+    assert.equal(await lstat(journal.backup).then(() => true, () => false), true);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":"replacement"}\n');
   });
 });

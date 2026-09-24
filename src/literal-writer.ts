@@ -240,3 +240,20 @@ export async function writeTreeArchive(root: string, destination: string, spec: 
 export async function writeLiteralArchive(root: string, destination: string, options: LiteralWriterOptions = {}): Promise<LiteralWriterResult> {
   return writeTreeArchive(root, destination, LITERAL_ARCHIVE_SPEC, options);
 }
+
+export type TreeDigest = Readonly<{ digest: string; files: number; directories: number; symlinks: number; totalBytes: number }>;
+
+// Deterministic digest of a tree using the same walk rules as the archive writer: no links followed,
+// hardlinks as independent bytes, entries ordered by path and a SHA-256 per file.
+export async function digestTree(root: string, spec: TreeArchiveSpec = LITERAL_ARCHIVE_SPEC, options: LiteralWriterOptions = {}): Promise<TreeDigest> {
+  const maxTotalBytes = options.maxTotalBytes ?? spec.totalBytesLimit;
+  const rootPath = await normalizeRoot(root);
+  const { manifest, sources } = await inventory(rootPath, spec, maxTotalBytes, options.signal);
+  return Object.freeze({
+    digest: createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+    files: sources.length,
+    directories: manifest.entries.filter(item => item.type === 'directory').length,
+    symlinks: manifest.entries.filter(item => item.type === 'symlink').length,
+    totalBytes: manifest.totalBytes,
+  });
+}
