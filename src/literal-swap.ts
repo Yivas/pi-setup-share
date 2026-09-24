@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { type Stats } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename, rmdir, statfs, unlink } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, normalize } from 'node:path';
 import { materializeReceiverBackup, previewReceiverBackup, writeReceiverBackup } from './literal-backup.ts';
 import { LITERAL_ARCHIVE_SPEC } from './literal-manifest.ts';
 import { digestTree, type TreeDigest } from './literal-writer.ts';
@@ -58,6 +58,9 @@ function unsafe(): never { throw new StorageError('unsafe-path'); }
 function checkedPath(value: unknown): string {
   if (typeof value !== 'string' || !value || !isAbsolute(value) || Buffer.byteLength(value, 'utf8') > MAX_PATH_BYTES
       || /[\p{C}]/u.test(value) || value !== value.normalize('NFC')) unsafe();
+  // Reject aliases: a path must already be canonical, so sibling and separation checks cannot be fooled
+  // by '.', '..', doubled or mixed separators or a trailing separator.
+  if (normalize(value) !== value) unsafe();
   return value;
 }
 
@@ -158,6 +161,12 @@ export async function writeSwapJournal(path: string, journal: SwapJournal): Prom
 }
 
 export type SwapPlan = Readonly<{ journalPath: string; journal: SwapJournal; agentIdentity: SwapIdentity; stagingIdentity: SwapIdentity }>;
+
+// The post-exit auxiliary runs in a different process, so it rebuilds the plan from the journal on disk.
+export async function loadSwapPlan(journalPath: string): Promise<SwapPlan> {
+  const journal = await readSwapJournal(journalPath);
+  return Object.freeze({ journalPath, journal, agentIdentity: journal.agentIdentity, stagingIdentity: journal.stagingIdentity });
+}
 
 function siblingPath(agentDir: string, suffix: string): string {
   return join(dirname(agentDir), `${agentDir.slice(dirname(agentDir).length + 1)}${suffix}`);

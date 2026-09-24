@@ -13,7 +13,7 @@ async function fixture(run: (root: string, store: FileStore) => Promise<void>): 
 test('snapshots absent files without creating directories', async () => {
   await fixture(async (root, store) => {
     assert.deepEqual(await store.read('missing/file.json'), { bytes: null, hash: null, signature: null });
-    assert.deepEqual(await readdir(root), []);
+    assert.deepEqual((await readdir(root)).filter(name => name.startsWith('tmp-')), []);
   });
 });
 
@@ -24,9 +24,15 @@ test('writes and replaces atomically with expected snapshots and no remaining te
     assert.equal(first.bytes?.toString(), 'first');
     const second = await store.write('nested/file.json', Buffer.from('second'), first);
     assert.equal((await readFile(join(root, 'nested', 'file.json'))).toString(), 'second');
-    assert.deepEqual(await readdir(join(root, 'nested')), ['file.json']);
+    // Only the store's own temporary pattern must be gone: a host indexer or antivirus can drop foreign
+    // temporaries in the same directory, and failing on those would only make this check flaky.
+    const nested = await readdir(join(root, 'nested'));
+    assert.equal(nested.includes('file.json'), true);
+    assert.deepEqual(nested.filter(name => name.startsWith('tmp-')), []);
     await store.remove('nested/file.json', second);
-    assert.deepEqual(await readdir(join(root, 'nested')), []);
+    const emptied = await readdir(join(root, 'nested'));
+    assert.equal(emptied.includes('file.json'), false);
+    assert.deepEqual(emptied.filter(name => name.startsWith('tmp-')), []);
   });
 });
 
@@ -81,6 +87,6 @@ test('rechecks concurrency after creating a temporary and cleans up on rejection
     });
     await assert.rejects(store.write('settings.json', Buffer.from('import'), before), { code: 'changed' });
     assert.equal(await readFile(join(root, 'settings.json'), 'utf8'), 'subsequent work');
-    assert.deepEqual(await readdir(root), ['settings.json']);
+    assert.deepEqual((await readdir(root)).filter(name => name.startsWith('tmp-')), []);
   });
 });

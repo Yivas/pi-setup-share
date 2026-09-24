@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, mkdir, open, rm, symlink, type FileHandle } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { lstat, mkdir, open, rename, rm, symlink, type FileHandle } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { crc32 } from 'node:zlib';
 import * as yauzl from 'yauzl';
 import { LITERAL_ARCHIVE_SPEC, type LiteralManifest, type TreeArchiveSpec } from './literal-manifest.ts';
@@ -285,25 +286,33 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
   return walkTreeArchive(path, spec, options);
 }
 
-// Second pass: materializes a verified archive into a private directory that must not exist yet.
-// Every path comes from the validated manifest, contents are hashed while writing, and a failure
-// removes the new directory instead of leaving a partial tree. Recreating symlinks needs a privilege
-// on Windows, so that format is refused there by the operating system and reported as invalid-state.
+// Second pass: materializes a verified archive into a directory that must not exist yet. The tree is
+// built under a unique temporary name that this call created exclusively and published with a rename,
+// so a concurrent process can never make us write into, or delete, a directory we do not own. Every
+// path comes from the validated manifest, contents are hashed while writing, and a failure removes only
+// that temporary tree. Recreating symlinks needs a privilege on Windows and is reported as invalid-state.
 export async function materializeTreeArchive(path: string, destination: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
   if (typeof destination !== 'string' || !isAbsolute(destination)) throw new StorageError('unsafe-path');
-  let created: Stats;
-  try {
-    await mkdir(destination, { mode: 0o700 });
-    created = await lstat(destination);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') throw new StorageError('unsafe-path');
-    throw new StorageError('unavailable');
+  if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
+  const parent = dirname(destination);
+  let temporary = '';
+  let created: Stats | undefined;
+  for (let attempt = 0; attempt < 2 && !created; attempt++) {
+    temporary = join(parent, `.${basename(destination)}.${randomUUID()}.tmp`);
+    try {
+      await mkdir(temporary, { mode: 0o700 });
+      created = await lstat(temporary);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') continue;
+      throw new StorageError('unavailable');
+    }
   }
+  if (!created) throw new StorageError('unavailable');
   const visitor: TreeVisitor = {
-    async directory(relative, mode) { await mkdir(join(destination, relative), { mode: mode || 0o700 }); },
-    async symlink(relative, target) { await symlink(target, join(destination, relative)); },
+    async directory(relative, mode) { await mkdir(join(temporary, relative), { mode: mode || 0o700 }); },
+    async symlink(relative, target) { await symlink(target, join(temporary, relative)); },
     async file(relative, mode) {
-      const handle = await open(join(destination, relative), 'wx', mode || 0o600);
+      const handle = await open(join(temporary, relative), 'wx', mode || 0o600);
       return {
         write: async (chunk: Buffer) => { await handle.write(chunk); },
         close: async () => { await handle.close(); },
@@ -311,15 +320,22 @@ export async function materializeTreeArchive(path: string, destination: string, 
     },
   };
   try {
-    return await walkTreeArchive(path, spec, options, visitor);
+    const result = await walkTreeArchive(path, spec, options, visitor);
+    // A directory that appeared meanwhile is never replaced: the caller gets an error instead.
+    if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
+    await rename(temporary, destination);
+    created = undefined;
+    return result;
   } catch (error) {
-    // Only remove the directory this call created: if a concurrent process replaced it, the identity
-    // no longer matches and the path is left untouched for a human to inspect.
-    const current = await lstat(destination).catch(() => undefined);
-    if (current?.isDirectory() && current.dev === created.dev && current.ino === created.ino) {
-      await rm(destination, { recursive: true, force: true }).catch(() => undefined);
-    }
     throw error;
+  } finally {
+    // Only the unique temporary this call created is removed, and only while its identity matches.
+    if (created) {
+      const current = await lstat(temporary).catch(() => undefined);
+      if (current?.isDirectory() && current.dev === created.dev && current.ino === created.ino) {
+        await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
   }
 }
 

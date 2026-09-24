@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
 import test from 'node:test';
 import {
-  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, preflightSwap, readSwapJournal, recoverSwap, restoreReceiverBackup, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
+  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, loadSwapPlan, preflightSwap, readSwapJournal, recoverSwap, restoreReceiverBackup, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal, type SwapPlan,
 } from '../src/literal-swap.ts';
 import { previewReceiverBackup, writeReceiverBackup } from '../src/literal-backup.ts';
 import { digestTree } from '../src/literal-writer.ts';
@@ -350,5 +351,70 @@ test('a completed swap cannot run again over the same plan', async () => {
     await assert.rejects(runSwap(plan), StorageError);
     assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), installed);
     assert.equal((await readSwapJournal(plan.journalPath)).state, 'success');
+  });
+});
+
+// Abrupt termination: a child process runs the swap, stops at a durable cut and is killed, so the
+// remaining state can only be rebuilt from disk.
+async function runSwapUntilKilled(plan: SwapPlan, stopState: string, workspace: string): Promise<void> {
+  const script = join(workspace, 'killed-swap-child.ts');
+  const source = new URL('../src/literal-swap.ts', import.meta.url).href;
+  await writeFile(script, [
+    `import { writeFile } from 'node:fs/promises';`,
+    `import { loadSwapPlan, runSwap } from ${JSON.stringify(source)};`,
+    `const plan = await loadSwapPlan(process.env.SWAP_JOURNAL);`,
+    `await runSwap(plan, { onTransition: async ({ state }) => {`,
+    `  if (state === process.env.SWAP_STOP) {`,
+    `    await writeFile(process.env.SWAP_MARKER, 'ready');`,
+    `    await new Promise(() => {});`,
+    `  }`,
+    `} });`,
+  ].join('\n'));
+  const marker = join(workspace, 'cut.marker');
+  const child = spawn(process.execPath, ['--experimental-strip-types', script], {
+    env: { ...process.env, SWAP_JOURNAL: plan.journalPath, SWAP_STOP: stopState, SWAP_MARKER: marker },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let diagnostics = '';
+  child.stderr?.on('data', (chunk: Buffer) => { diagnostics += chunk.toString('utf8'); });
+  try {
+    const deadline = Date.now() + 60_000;
+    while (!await lstat(marker).then(() => true, () => false)) {
+      if (Date.now() > deadline) throw new Error(`the child did not reach the ${stopState} cut: ${diagnostics.slice(0, 2000)}`);
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  } finally {
+    child.kill('SIGKILL');
+    await new Promise<void>(resolve => child.once('exit', () => resolve()));
+  }
+}
+
+test('a process killed before the renames keeps the original intact and recovers conservatively', { timeout: 120_000 }, async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await runSwapUntilKilled(plan, 'backed-up', workspace);
+    const journal = await readSwapJournal(plan.journalPath);
+    assert.equal(journal.state, 'backed-up');
+    assert.equal(await lstat(journal.rescue).then(() => true, () => false), false);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal((await previewReceiverBackup(journal.backup)).files >= 1, true);
+    const recovered = await recoverSwap(plan.journalPath);
+    assert.equal(recovered.state, 'recovery-required');
+    assert.equal(recovered.note?.includes('nothing changed'), true);
+  });
+});
+
+test('a process killed between the renames is recovered from the rescue path', { timeout: 120_000 }, async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await runSwapUntilKilled(plan, 'old-moved', workspace);
+    const journal = await readSwapJournal(plan.journalPath);
+    assert.equal(journal.state, 'old-moved');
+    assert.equal(await lstat(agentDir).then(() => true, () => false), false);
+    assert.equal((await digestTree(journal.rescue)).digest, journal.agentDigest);
+    const recovered = await recoverSwap(plan.journalPath);
+    assert.equal(recovered.state, 'recovery-required');
+    assert.equal(recovered.note?.includes('original restored'), true);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
   });
 });
