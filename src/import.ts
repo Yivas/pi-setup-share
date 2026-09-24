@@ -271,7 +271,7 @@ export async function previewInstallation(store: FileStore, importId: string): P
   installationPlans.set(plan, { store, manifest, manifestSnapshot, profileSnapshot, profileText: serializeProfile(profile) });
   return plan;
 }
-export async function installPackages(store: FileStore, plan: InstallationPlan, consent: boolean, factory: PackageInstallerFactory, signal?: AbortSignal): Promise<ImportResult> {
+export async function installPackages(store: FileStore, plan: InstallationPlan, consent: boolean, factory: PackageInstallerFactory, signal?: AbortSignal, onInstalled?: (source: string) => void): Promise<ImportResult> {
   checkConsent(consent, signal);
   const prepared = installationPlans.get(plan);
   if (!prepared || prepared.store !== store) throw new StorageError('invalid-state');
@@ -306,6 +306,7 @@ export async function installPackages(store: FileStore, plan: InstallationPlan, 
       const source = `./${relative(store.root, resolve(installedPath)).replaceAll('\\', '/')}`;
       const canonical = await verifyPackageDirectory(store, plan.importId, source);
       packageSources.push(`./${relative(store.root, canonical).replaceAll('\\', '/')}`);
+      onInstalled?.(package_.source);
     }
     if (new Set(packageSources).size !== packageSources.length) throw new StorageError('unsafe-path');
     checkConsent(consent, signal);

@@ -342,6 +342,15 @@ test('the maximum package count fits a bounded installation receipt', async () =
   });
 });
 
+test('installation reports each package once its directory is verified', async () => {
+  await fixture(async (_root, store) => {
+    const id = await stage(store);
+    const seen: string[] = [];
+    await installPackages(store, await previewInstallation(store, id), true, fake(), undefined, source => seen.push(source));
+    assert.deepEqual(seen, profile.packages.map(entry => entry.source));
+  });
+});
+
 test('an existing receiver package of another version is a per-identity conflict and is never duplicated', async () => {
   await fixture(async (root, store) => {
     await writeFile(join(root, 'settings.json'), '{"packages":[{"source":"npm:synthetic-one@2.0.0"}]}\n');

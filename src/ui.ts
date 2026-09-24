@@ -209,7 +209,12 @@ async function continueImport(ctx: ExtensionCommandContext, store: FileStore, im
     const installation = await previewInstallation(store, importId);
     await review(ctx, installation.sources);
     if (!await confirmStep(ctx, en.installTitle, en.installWarning)) { ctx.ui.notify(en.deferred, 'info'); return; }
-    await runOperation(ctx, en.installing, signal => installPackages(store, installation, true, installer, signal));
+    const installing = new ProgressTracker(en.installing);
+    installing.setTotal(installation.sources.length);
+    await runOperation(ctx, en.installing, signal => installPackages(store, installation, true, installer, signal, source => {
+      installing.begin(source);
+      installing.finish('completed');
+    }), installing);
   }
   let activation = await previewActivation(store, importId);
   const configuration: Record<string, string> = {};
