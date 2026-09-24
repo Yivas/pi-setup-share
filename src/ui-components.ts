@@ -58,6 +58,77 @@ export async function review(ctx: ExtensionCommandContext, lines: readonly strin
 const selectAllValue = '__setup_share_select_all';
 const continueValue = '__setup_share_continue';
 
+export type ProgressOutcome = 'completed' | 'skipped' | 'failed';
+export type ProgressSnapshot = Readonly<{
+  phase: string;
+  total: number | null;
+  completed: number;
+  skipped: number;
+  failed: number;
+  running: string | null;
+  recent: readonly string[];
+  cancelling: boolean;
+}>;
+
+export const PROGRESS_BAR_WIDTH = 20;
+export const PROGRESS_RECENT = 6;
+
+// Progress state for long operations. A total is only ever set when the caller knows the real number of
+// items, so a percentage is never invented; labels must be safe (type and index, never paths or values).
+export class ProgressTracker {
+  private phase: string;
+  private total: number | null = null;
+  private completed = 0;
+  private skipped = 0;
+  private failed = 0;
+  private running: string | null = null;
+  private recent: string[] = [];
+  private cancelling = false;
+
+  constructor(phase: string) { this.phase = safeDisplay(phase); }
+
+  setPhase(phase: string): void { this.phase = safeDisplay(phase); }
+
+  setTotal(total: number | null): void {
+    if (total !== null && (!Number.isSafeInteger(total) || total < 0)) throw new Error('Invalid progress total');
+    this.total = total;
+  }
+
+  begin(label: string): void { this.running = safeDisplay(label); }
+
+  finish(outcome: ProgressOutcome, label?: string): void {
+    const name = label === undefined ? this.running : safeDisplay(label);
+    if (typeof name === 'string' && name.length > 0) {
+      this.recent = [...this.recent, `${name}: ${en[outcome === 'completed' ? 'progressCompleted' : outcome === 'skipped' ? 'progressSkipped' : 'progressFailed']}`].slice(-PROGRESS_RECENT);
+    }
+    if (outcome === 'completed') this.completed++;
+    else if (outcome === 'skipped') this.skipped++;
+    else this.failed++;
+    this.running = null;
+  }
+
+  requestCancel(): void { this.cancelling = true; }
+
+  snapshot(): ProgressSnapshot {
+    return Object.freeze({ phase: this.phase, total: this.total, completed: this.completed, skipped: this.skipped,
+      failed: this.failed, running: this.running, recent: Object.freeze([...this.recent]), cancelling: this.cancelling });
+  }
+}
+
+export function progressLines(snapshot: ProgressSnapshot, width: number): string[] {
+  const narrow = Math.max(8, Math.min(PROGRESS_BAR_WIDTH, width - 24));
+  const done = snapshot.completed + snapshot.skipped + snapshot.failed;
+  const counter = snapshot.total === null ? '' : ` ${done}/${snapshot.total}`;
+  const filled = snapshot.total === null ? 0 : Math.min(narrow, Math.round((narrow * done) / Math.max(1, snapshot.total)));
+  const bar = `[${'\u2588'.repeat(filled)}${'\u2591'.repeat(narrow - filled)}]`;
+  const lines = [`${snapshot.phase}  ${bar}${counter}`,
+    `${en.progressCompleted}: ${snapshot.completed}  ${en.progressSkipped}: ${snapshot.skipped}  ${en.progressFailed}: ${snapshot.failed}`];
+  if (snapshot.running !== null) lines.push(`${en.progressRunning}: ${snapshot.running}`);
+  if (snapshot.cancelling) lines.push(en.cancelling);
+  for (const entry of snapshot.recent) lines.push(entry);
+  return lines.map(line => safeDisplay(line));
+}
+
 export function selectionComponent(
   tui: TUI, theme: Theme, done: (ids: string[] | undefined) => void, items: readonly SelectItem[], selectAllLabel?: string,
 ): Component {
@@ -115,14 +186,17 @@ export async function confirmStep(ctx: ExtensionCommandContext, title: string, w
   });
 }
 
-export async function runOperation<T>(ctx: ExtensionCommandContext, title: string, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function runOperation<T>(ctx: ExtensionCommandContext, title: string, operation: (signal: AbortSignal) => Promise<T>, tracker?: ProgressTracker): Promise<T> {
   const result = await ctx.ui.custom<{ value: T } | { error: unknown }>((tui, theme, _keys, done) => {
     const loader = new CancellableLoader(tui, text => theme.fg('accent', text), text => theme.fg('muted', text), title);
-    loader.onAbort = () => { loader.setMessage(en.cancelling); tui.requestRender(); };
+    loader.onAbort = () => { loader.setMessage(en.cancelling); tracker?.requestCancel(); tui.requestRender(); };
     // Keep the modal and command guard until the operation settles, even after cancellation.
     void Promise.resolve().then(() => operation(loader.signal)).then(value => done({ value }), error => done({ error })).finally(() => loader.dispose());
     return {
-      render(width) { return [...loader.render(width), ...new Text(en.operationHelp, 1, 0).render(width)]; },
+      render(width) {
+        const progress = tracker ? progressLines(tracker.snapshot(), width).map(line => truncateToWidth(line, width)) : [];
+        return [...loader.render(width), ...progress, ...new Text(en.operationHelp, 1, 0).render(width)];
+      },
       handleInput(data) { loader.handleInput(data); },
       invalidate() { loader.invalidate(); },
       dispose() { loader.dispose(); },

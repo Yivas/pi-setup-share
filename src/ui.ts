@@ -10,7 +10,7 @@ import { validateProfile, type ResourceKind, type ResourceProfile } from './prof
 import { FileStore, StorageError } from './storage.ts';
 import { TRANSFER_CATEGORIES, RECEIVER_ACTIONS, type TransferCategory, type TransferReason } from './transfer-report.ts';
 import { recoverChanges } from './transaction.ts';
-import { confirmStep, review, runOperation, safeDisplay, selectItems } from './ui-components.ts';
+import { confirmStep, ProgressTracker, review, runOperation, safeDisplay, selectItems } from './ui-components.ts';
 import { ProfileError } from './validation.ts';
 
 export function errorMessage(error: unknown): string {
@@ -83,7 +83,8 @@ async function exportSetup(ctx: ExtensionCommandContext, store: FileStore, agent
   }
   if (await ctx.ui.confirm(en.resourcesTitle, en.resourcesWarning)) {
     if (await ctx.ui.confirm(en.discoverTitle, en.discoverWarning)) {
-      const inventory = await runOperation(ctx, en.reading, signal => discoverGlobalResources(agentDir, homeDir, signal));
+      const discovery = new ProgressTracker(en.reading);
+      const inventory = await runOperation(ctx, en.reading, signal => discoverGlobalResources(agentDir, homeDir, signal), discovery);
       scannedResources = true;
       truncatedResources = inventory.truncated;
       const ids = await selectItems(ctx, inventory.items.map((item, index) => ({
@@ -280,24 +281,29 @@ async function runSetupShareFlow(ctx: ExtensionCommandContext, agentDir: string,
   }
   const ids = await listImports(store);
   if (!ids.length) { ctx.ui.notify(en.noImports, 'info'); return; }
+  const reading = new ProgressTracker(en.reading);
+  reading.setTotal(ids.length);
   const entries = await runOperation(ctx, en.reading, async signal => {
     const results: { id: string; label: string }[] = [];
     for (const id of ids) {
       if (signal.aborted) throw new StorageError('aborted');
+      reading.begin(id);
       try {
         const summary = await inspectImport(store, id);
         const next = summary.state === 'active' ? en.nextActions.restore
           : summary.state === 'installation-abandoned' ? en.nextActions.fresh
           : summary.state === 'staged' && summary.packages ? en.nextActions.install : en.nextActions.activate;
         results.push({ id, label: en.importLabel(id, en.states[summary.state], summary.resources, summary.packages, next) });
+        reading.finish('completed');
       } catch (error) {
         if (!(error instanceof StorageError) && !(error instanceof ProfileError)) throw error;
         if (error instanceof StorageError && (error.code === 'recovery-required' || error.code === 'limit-exceeded')) throw error;
         results.push({ id, label: en.unverifiedImport(id) });
+        reading.finish('failed');
       }
     }
     return results;
-  });
+  }, reading);
   const selected = await ctx.ui.select(en.chooseImport, entries.map(entry => entry.label));
   const importId = entries.find(entry => entry.label === selected)?.id;
   if (!importId) return;

@@ -38,6 +38,7 @@ export const en = {
   reading: 'Checking saved imports…', working: 'Applying confirmed changes…', installing: 'Installing packages…',
   cancelling: 'Cancellation requested — waiting for the current operation to settle.',
   operationHelp: 'Esc requests cancellation; do not start another operation while this one finishes.',
+  progressCompleted: 'completed', progressSkipped: 'skipped', progressFailed: 'failed', progressRunning: 'in progress',
   conflicts: 'Resolve conflicts — preserve existing by default', preserve: 'Preserve existing', overwrite: 'Overwrite selected item', skip: 'Skip selected item',
   noChanges: 'Cancelled before staging; no import changes were made.',
   resourcesTitle: 'Add explicitly selected resource files?',
