@@ -279,6 +279,8 @@ async function runSetupShareFlow(ctx: ExtensionCommandContext, agentDir: string,
     // while that count is real; the label carries counts, never paths or file contents.
     const staging_ = new ProgressTracker(en.working);
     staging_.setTotal(staging.writes);
+    // Each increment confirms one durable store write, not the completion of the transaction: success is
+    // announced only after the whole operation commits, and a failure afterwards still rolls back.
     await runOperation(ctx, en.working, signal => applyImport(store, staging, true, signal, (index, total) => {
       // The declared count can exceed the writes actually needed, because unchanged files are skipped. The
       // real count replaces it, so the bar never claims completion before the last write is durable.
