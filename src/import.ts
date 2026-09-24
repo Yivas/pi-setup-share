@@ -338,12 +338,13 @@ async function topLevelEntries(store: FileStore): Promise<Set<string>> {
   return names;
 }
 
-// Pinned npm/Git sources share one identity across versions; other references only match themselves.
-function referenceIdentity(entry: unknown): string {
+// Pinned npm/Git sources share one identity across versions. References without a usable string source
+// are incomparable: they never match anything, so an unknown receiver entry is preserved untouched.
+function referenceIdentity(entry: unknown): string | undefined {
   const source = typeof entry === 'string' ? entry
     : entry !== null && typeof entry === 'object' && !Array.isArray(entry) && typeof (entry as { source?: unknown }).source === 'string'
       ? (entry as { source: string }).source : undefined;
-  if (source === undefined) return `opaque:${JSON.stringify(entry) ?? 'unrepresentable'}`;
+  if (source === undefined) return undefined;
   try { return packageIdentity(source); } catch { return source; }
 }
 
@@ -377,14 +378,14 @@ function addReferences(profile: ResourceProfile, importId: string, settings: Rec
   }
   // Packages are reported per declared identity: a receiver package with the same identity but another
   // version is one conflict, and overwriting replaces exactly that entry instead of appending a duplicate.
-  function appendPackage(declared: string, installed: unknown, id: string): void {
+  function appendPackage(identity: string, installed: unknown, id: string): void {
     known.add(id);
     const decision = decide(id);
     const existing = baseline.packages;
     const valid = Array.isArray(existing);
     const missing = !Object.hasOwn(baseline, 'packages');
-    const identity = referenceIdentity(declared);
     const sameIndex = valid ? existing.findIndex(entry => isDeepStrictEqual(entry, installed)) : -1;
+    // Pre-existing duplicates are never deleted: overwrite replaces only the first matching entry.
     const identityIndex = valid ? existing.findIndex(entry => referenceIdentity(entry) === identity) : -1;
     const status: PreviewItem['status'] = missing ? 'new' : !valid ? 'conflict' : sameIndex >= 0 ? 'same' : identityIndex >= 0 ? 'conflict' : 'new';
     const write = decision !== 'skip' && (status === 'new' || (status === 'conflict' && decision === 'overwrite'));
@@ -401,8 +402,9 @@ function addReferences(profile: ResourceProfile, importId: string, settings: Rec
   if (agentDirectories(profile).length) append('packages', [{ source: `${base}/agents-package`, extensions: [], skills: [], prompts: [], themes: [] }], 'resources.agent');
   (profile.packages ?? []).forEach((package_, index) => {
     const installed = packageSources[index];
-    if (!installed) return;
-    appendPackage(package_.source, { ...package_, source: installed }, `packages:${referenceIdentity(package_.source)}`);
+    const identity = referenceIdentity(package_.source);
+    if (!installed || identity === undefined) return;
+    appendPackage(identity, { ...package_, source: installed }, `packages:${identity}`);
   });
   if (Object.keys(decisions).some(key => !known.has(key))) throw new StorageError('invalid-state');
   return items;

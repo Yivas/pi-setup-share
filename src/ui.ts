@@ -221,9 +221,14 @@ export async function runSetupShare(ctx: ExtensionCommandContext, agentDir: stri
   try {
     await runSetupShareFlow(ctx, agentDir, installer, homeDir);
   } catch (error) {
-    // Boundary: validation and storage failures notify the receiver instead of rejecting the command.
+    // Boundary: recoverable failures become a notification, but cancellation, lock and recovery gates
+    // must still reject so Pi and callers keep their cancellation and blocking contract.
+    if (error instanceof StorageError) {
+      if (error.code === 'aborted' || error.code === 'busy' || error.code === 'recovery-required') throw error;
+      ctx.ui.notify(en.errors[error.code] ?? en.unknownError, 'warning');
+      return;
+    }
     if (error instanceof ProfileError) { ctx.ui.notify(en.invalidProfile, 'warning'); return; }
-    if (error instanceof StorageError) { ctx.ui.notify(en.errors[error.code] ?? en.unknownError, 'warning'); return; }
     throw error;
   }
 }

@@ -432,3 +432,33 @@ test('restore leaves external script effects declared and untouched', async () =
     assert.equal(await readFile(join(root, 'script-effect.txt'), 'utf8'), 'synthetic external effect');
   });
 });
+
+test('receiver package entries without a usable source are never matched by identity', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'settings.json'), JSON.stringify({ packages: [{ name: 'unknown-entry' }, { name: 'unknown-entry' }] }));
+    const id = await stage(store);
+    await installPackages(store, await previewInstallation(store, id), true, fake());
+    const plan = await previewActivation(store, id);
+    assert.deepEqual(plan.items.filter(item => item.id.startsWith('packages:')).map(item => item.status), ['new', 'new']);
+    await activateImport(store, plan, true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.equal(settings.packages.length, 4);
+    assert.deepEqual(settings.packages.slice(0, 2), [{ name: 'unknown-entry' }, { name: 'unknown-entry' }]);
+  });
+});
+
+test('overwrite replaces only the first of two identical receiver identities', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'settings.json'), JSON.stringify({ packages: [{ source: 'npm:synthetic-one@2.0.0' }, { source: 'npm:synthetic-one@3.0.0' }] }));
+    const id = await stage(store);
+    await installPackages(store, await previewInstallation(store, id), true, fake());
+    const plan = await previewActivation(store, id, { resources: { 'packages:npm:synthetic-one': 'overwrite' } });
+    await activateImport(store, plan, true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.deepEqual(settings.packages.map((entry: { source: string }) => entry.source), [
+      `./${base(id)}/package-store/npm/node_modules/synthetic-1`,
+      'npm:synthetic-one@3.0.0',
+      `./${base(id)}/package-store/npm/node_modules/synthetic-2`,
+    ]);
+  });
+});

@@ -392,6 +392,35 @@ test('activation coverage report distinguishes preserved, replaced and skipped i
     assert.match(screens, /conflict \/ preserve/);
     assert.match(screens, /conflict \/ write/);
     assert.match(screens, /\/ skip/);
+    const settings = JSON.parse(await readFile(join(agent, 'settings.json'), 'utf8'));
+    assert.equal(settings.quietStartup, false);
+    assert.equal(settings.prompts, false);
+    assert.deepEqual(settings.packages, [{ source: 'npm:example@9.9.9' }]);
+    const mcp = JSON.parse(await readFile(join(agent, 'mcp.json'), 'utf8'));
+    assert.deepEqual(mcp.mcpServers.example.args, ['other.js']);
+    assert.equal(mcp.mcpServers.example.disabled, true);
+  });
+});
+
+test('recovery and lock gates still reject instead of resolving as a notification', async () => {
+  await fixture(async (root, agent) => {
+    const source = join(root, 'profile.json');
+    await writeFile(source, JSON.stringify(profile));
+    await mkdir(join(agent, 'setup-share'), { recursive: true });
+    await writeFile(join(agent, 'setup-share', 'pending.json'), '{}');
+    const ui = context([en.import], [source], [{ count: 1, include: [0] }]);
+    await assert.rejects(runSetupShare(ui.ctx, agent, noInstall), { code: 'recovery-required' });
+    assert.deepEqual(ui.notifications, []);
+  });
+  await fixture(async (root, agent) => {
+    const source = join(root, 'profile.json');
+    await writeFile(source, JSON.stringify(profile));
+    // A first staged import creates the store owner file, so the lock is the only remaining obstacle.
+    await runSetupShare(context([en.import], [source], [{ count: 1, include: [0] }, true, false]).ctx, agent, noInstall);
+    await mkdir(join(agent, 'setup-share', 'lock'), { recursive: true });
+    const ui = context([en.import], [source], [{ count: 1, include: [0] }, true]);
+    await assert.rejects(runSetupShare(ui.ctx, agent, noInstall), { code: 'busy' });
+    assert.deepEqual(ui.notifications, []);
   });
 });
 
