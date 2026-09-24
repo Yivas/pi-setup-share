@@ -2,7 +2,7 @@
 
 Share selected Pi settings and resources through a native `/setup-share` assistant, without copying an entire user directory.
 
-**Version 0.3.0 — selective global resource inventory and v2 transfer reports.** Update both sender and receiver before sharing a v2 profile: version 0.2.0 cannot read it. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
+**Version 0.4.0 — per-item conflict decisions and honest progress.** Profiles keep the v2 format: update both computers before sharing a new export, because a 0.2.0 receiver cannot read it. Start with synthetic data: validation does not make imported code trustworthy, and isolated package storage is not a sandbox.
 
 [Use in Pi](#use-in-pi) · [Changes](CHANGELOG.md) · [Development](#development) · [Security](SECURITY.md) · [Contribute](CONTRIBUTING.md)
 
@@ -15,6 +15,8 @@ Share selected Pi settings and resources through a native `/setup-share` assista
 - Inventory names from known global Pi and user-agent resource locations, then read only selected text/binary files with bounded reads, link rejection, cancellation, and file-change checks.
 - Project inactive MCP definitions, minimal subagent settings, and pinned package descriptors without connecting or installing.
 - Serialize explicit selections and preview configuration conflicts without filesystem effects.
+- Decide each conflict by item — keep, replace or skip — across pinned packages, local resources and MCP servers, and report what happened to every element.
+- Show progress while long operations run: a determined bar only while the total is real, a phase otherwise, and cancellation as a request rather than a fact.
 - Back up, apply, restore, and recover bounded managed-file transactions with consent and change checks.
 - Install pinned packages into a per-import directory through Pi's package manager, then separately activate local references.
 
@@ -35,10 +37,10 @@ npm run check
 
 ## Use in Pi
 
-Use Pi 0.85.0. Version 0.3.0 adds global resource inventory and v2 reports. To use a development checkout, load `./src/index.ts` from this directory in an isolated Pi instance. To install the versioned package:
+Use Pi 0.85.0. Version 0.4.0 adds per-item conflict decisions and progress reporting. To use a development checkout, load `./src/index.ts` from this directory in an isolated Pi instance. To install the versioned package:
 
 ```sh
-pi install npm:pi-setup-share@0.3.0
+pi install npm:pi-setup-share@0.4.0
 ```
 
 Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives containing exactly `profile.json`; inspection and import also accept plain JSON profiles created by 0.1.x.
@@ -46,7 +48,7 @@ Restart Pi, then enter `/setup-share`. New exports are standard ZIP archives con
 To try the package for one interactive session without adding it to global settings, run:
 
 ```sh
-pi -e npm:pi-setup-share@0.3.0
+pi -e npm:pi-setup-share@0.4.0
 ```
 
 You can also work from a checkout or extract the source archive from [GitHub Releases](https://github.com/Yivas/pi-setup-share/releases). From the package directory, load the extension directly with:
@@ -99,7 +101,7 @@ The assistant does not send profiles or target configuration to models, session 
 
 ## Draft resource format
 
-A 0.3.0 export contains one file named `profile.json` with interior version 2 and a bounded `transfer` report. The 0.2.0 reader rejects version 2; 0.3.0 reads both versions 1 and 2, including legacy plain JSON. The ZIP transport still contains only one member. This synthetic example contains a prompt as data, not an instruction to execute:
+An export contains one file named `profile.json` with interior version 2 and a bounded `transfer` report. A 0.2.0 reader rejects version 2; later versions read both versions 1 and 2, including legacy plain JSON. The ZIP transport still contains only one member. This synthetic example contains a prompt as data, not an instruction to execute:
 
 ```json
 {

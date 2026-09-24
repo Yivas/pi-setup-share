@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 — 2026-09-24
+
+### Added
+
+- Decide each conflict by item: keep, replace or skip, separately for pinned packages, local resources and MCP servers. Duplicate resource paths require an explicit source choice, and a colliding resource path can be omitted entirely.
+- See progress while long operations run: a determined bar only while the total is real, a named phase otherwise, a bounded list of recent results and cancellation shown as a request. Staging, package installation and activation report one element at a time.
+
+### Security and compatibility
+
+- Profile reading and writing are unchanged: new exports remain one-entry ZIP archives with a v2 `profile.json`, and v1 ZIP and legacy plain JSON still import. Receivers on 0.2.0 cannot read v2 profiles; update both computers before sharing a new export.
+- Progress reports counts, phases and outcomes only. It never shows paths, values or file contents, and each increment confirms one durable write rather than the completion of the operation: success is announced only after the whole transaction commits.
+- The whole-directory copy machinery (literal transfer) is not part of this release: it has no entry point in the assistant and cannot be enabled. Pi 0.85.0 does not hand an extension a verifiable identity for the root Pi was using, and Windows ACLs cannot be checked from Node, so the mode stays disconnected and documented instead of offered.
+
 ## Unreleased
 
 ## 0.3.0 — 2026-09-23
