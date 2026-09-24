@@ -46,10 +46,12 @@ function sameSource(source: LiteralFileSource, stats: Stats): boolean {
 async function normalizeRoot(root: string): Promise<string> {
   const stats = await lstat(root).catch(() => invalid());
   if (!stats.isDirectory() || stats.isSymbolicLink()) unsafe();
+  // Use the resolved path for comparisons, but do not require it to equal the argument: on macOS the
+  // system temp directory lives behind /var -> /private/var and that is still a legitimate root.
   const resolved = await realpath(root);
-  const normalize = (value: string) => (process.platform === 'win32' ? value.replace(/^\\\\\?\\/, '').toLowerCase() : value);
-  if (normalize(resolved) !== normalize(root)) unsafe();
-  return root;
+  const resolvedStats = await lstat(resolved).catch(() => invalid());
+  if (!resolvedStats.isDirectory() || resolvedStats.isSymbolicLink()) unsafe();
+  return resolved;
 }
 
 // Hashes one regular file while checking that the opened handle and the path still describe it.

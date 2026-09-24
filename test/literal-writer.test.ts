@@ -36,10 +36,6 @@ test('writes a synthetic tree that the literal reader verifies without extractio
 test('stores relative symlinks as manifest entries and refuses escaping ones', async () => {
   await fixture(async (root, output) => {
     const totalBytes = await syntheticTree(root);
-    await symlink('settings.json', join(root, 'link.json'));
-    const result = await writeLiteralArchive(root, output);
-    assert.equal(result.symlinks, 1);
-    assert.deepEqual(await previewLiteralArchive(output), { sourcePlatform: process.platform, files: 2, directories: 2, symlinks: 1, totalBytes });
     const escaping = await mkdtemp(join(tmpdir(), 'pi-literal-writer-escape-'));
     try {
       await mkdir(join(escaping, 'agent'));
@@ -51,6 +47,16 @@ test('stores relative symlinks as manifest entries and refuses escaping ones', a
       await symlink(escaping, join(escaping, 'agent', 'outside'), 'junction');
       await assert.rejects(writeLiteralArchive(join(escaping, 'agent'), join(escaping, 'out.zip')), { code: 'unsafe-path' });
     } finally { await rm(escaping, { recursive: true, force: true }); }
+    // File symlinks need a privilege on Windows runners; the junction case above covers the refusal.
+    const relative = join(root, 'link.json');
+    try { await symlink('settings.json', relative); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw error;
+    }
+    const result = await writeLiteralArchive(root, output);
+    assert.equal(result.symlinks, 1);
+    assert.deepEqual(await previewLiteralArchive(output), { sourcePlatform: process.platform, files: 2, directories: 2, symlinks: 1, totalBytes });
   });
 });
 
