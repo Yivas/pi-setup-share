@@ -15,8 +15,8 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as yazl from 'yazl';
-import { previewLiteralArchive } from './literal-archive.ts';
-import { LITERAL_MANIFEST_LIMITS, validateLiteralManifest, type LiteralEntry, type LiteralManifest } from './literal-manifest.ts';
+import { previewTreeArchive } from './literal-archive.ts';
+import { LITERAL_ARCHIVE_SPEC, LITERAL_MANIFEST_LIMITS, type LiteralEntry, type LiteralManifest, type TreeArchiveSpec } from './literal-manifest.ts';
 import { StorageError } from './storage.ts';
 
 export type LiteralWriterOptions = Readonly<{ signal?: AbortSignal; maxTotalBytes?: number }>;
@@ -27,8 +27,6 @@ type LiteralFileSource = Readonly<{
   dev: number; ino: number; mtimeMs: number; ctimeMs: number;
 }>;
 
-const MANIFEST_BYTES = 128 * 1024 ** 2;
-const MANIFEST_NAME = 'manifest.json';
 const ZIP_TIME = new Date('1980-01-01T00:00:00.000Z');
 
 function invalid(): never { throw new StorageError('invalid-state'); }
@@ -55,7 +53,7 @@ async function normalizeRoot(root: string): Promise<string> {
 }
 
 // Hashes one regular file while checking that the opened handle and the path still describe it.
-async function fingerprint(path: string, initial: Stats, signal?: AbortSignal): Promise<{ sha256: string; size: number }> {
+async function fingerprint(path: string, initial: Stats, limit: number, signal?: AbortSignal): Promise<{ sha256: string; size: number }> {
   const file = await open(path, constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW));
   try {
     const opened = await file.stat();
@@ -65,7 +63,7 @@ async function fingerprint(path: string, initial: Stats, signal?: AbortSignal): 
     for await (const chunk of file.createReadStream({ autoClose: false })) {
       checkAbort(signal);
       size += chunk.length;
-      if (size > opened.size || size > LITERAL_MANIFEST_LIMITS.totalBytes) throw new StorageError('limit-exceeded');
+      if (size > opened.size || size > limit) throw new StorageError('limit-exceeded');
       hash.update(chunk);
     }
     const after = await file.stat();
@@ -78,7 +76,7 @@ async function fingerprint(path: string, initial: Stats, signal?: AbortSignal): 
 }
 
 // Walks the root without following links; hardlinked paths are stored as independent bytes.
-async function inventory(root: string, maxTotalBytes: number, signal?: AbortSignal): Promise<{ manifest: LiteralManifest; sources: readonly LiteralFileSource[] }> {
+async function inventory(root: string, spec: TreeArchiveSpec, maxTotalBytes: number, signal?: AbortSignal): Promise<{ manifest: LiteralManifest; sources: readonly LiteralFileSource[] }> {
   checkAbort(signal);
   const before = await lstat(root);
   if (!before.isDirectory() || before.isSymbolicLink()) unsafe();
@@ -95,7 +93,7 @@ async function inventory(root: string, maxTotalBytes: number, signal?: AbortSign
       checkAbort(signal);
       const path = prefix ? `${prefix}/${child.name}` : child.name;
       if (Buffer.byteLength(path, 'utf8') > LITERAL_MANIFEST_LIMITS.pathBytes
-          || entries.length >= LITERAL_MANIFEST_LIMITS.entries) throw new StorageError('limit-exceeded');
+          || entries.length >= spec.maxEntries) throw new StorageError('limit-exceeded');
       const full = join(directory, child.name);
       const stats = await lstat(full);
       if (stats.isSymbolicLink()) {
@@ -108,7 +106,7 @@ async function inventory(root: string, maxTotalBytes: number, signal?: AbortSign
         entries.push({ path, type: 'directory', mode: stats.mode & 0o777 });
         await visit(full, path, depth + 1);
       } else if (stats.isFile()) {
-        const { sha256, size } = await fingerprint(full, stats, signal);
+        const { sha256, size } = await fingerprint(full, stats, spec.totalBytesLimit, signal);
         total += size;
         if (total > maxTotalBytes) throw new StorageError('limit-exceeded');
         entries.push({ path, type: 'file', mode: stats.mode & 0o777, size, sha256 });
@@ -126,7 +124,7 @@ async function inventory(root: string, maxTotalBytes: number, signal?: AbortSign
   entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   let manifest: LiteralManifest;
   try {
-    manifest = validateLiteralManifest({ format: 'pi-setup-share-literal', version: 1,
+    manifest = spec.validateManifest({ format: spec.format, version: 1,
       root: 'agentDir', sourcePlatform: process.platform, totalBytes: total, entries });
   } catch (error) {
     // The manifest validator reports path-safety failures as StorageError('unsafe-path'); keep them.
@@ -175,23 +173,23 @@ async function verifiedStream(source: LiteralFileSource, signal?: AbortSignal): 
 
 // The archive is only published after it has been read back and verified; an existing destination is
 // never replaced, and a failed attempt leaves no temporary file behind.
-export async function writeLiteralArchive(root: string, destination: string, options: LiteralWriterOptions = {}): Promise<LiteralWriterResult> {
+export async function writeTreeArchive(root: string, destination: string, spec: TreeArchiveSpec, options: LiteralWriterOptions = {}): Promise<LiteralWriterResult> {
   checkAbort(options.signal);
-  const maxTotalBytes = options.maxTotalBytes ?? LITERAL_MANIFEST_LIMITS.totalBytes;
+  const maxTotalBytes = options.maxTotalBytes ?? spec.totalBytesLimit;
   if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes < 0) throw new StorageError('limit-exceeded');
   const rootPath = await normalizeRoot(root);
   const parent = await realpath(dirname(destination)).catch(() => invalid());
   const inside = relative(rootPath, parent);
   if (inside === '' || (!inside.startsWith(`..${sep}`) && inside !== '..' && !isAbsolute(inside))) unsafe();
   if (await lstat(destination).then(() => true, () => false)) unsafe();
-  const inventoryBefore = await inventory(rootPath, maxTotalBytes, options.signal);
+  const inventoryBefore = await inventory(rootPath, spec, maxTotalBytes, options.signal);
   const manifestBytes = Buffer.from(JSON.stringify(inventoryBefore.manifest), 'utf8');
-  if (manifestBytes.length > MANIFEST_BYTES) throw new StorageError('limit-exceeded');
+  if (manifestBytes.length > spec.manifestBytes) throw new StorageError('limit-exceeded');
   const temporary = join(parent, `.${basename(destination)}.${randomBytes(12).toString('hex')}.tmp`);
   const zip = new yazl.ZipFile();
-  zip.addBuffer(manifestBytes, MANIFEST_NAME, { mtime: ZIP_TIME, mode: 0o100600, compress: true, forceDosTimestamp: true });
+  zip.addBuffer(manifestBytes, spec.manifestName, { mtime: ZIP_TIME, mode: 0o100600, compress: true, forceDosTimestamp: true });
   inventoryBefore.sources.forEach((source, index) => {
-    zip.addReadStreamLazy(`payload/${String(index + 1).padStart(6, '0')}`,
+    zip.addReadStreamLazy(`${spec.payloadPrefix}${String(index + 1).padStart(6, '0')}`,
       { mtime: ZIP_TIME, mode: 0o100600, compress: true, forceDosTimestamp: true, size: source.size },
       callback => { void verifiedStream(source, options.signal).then(stream => callback(null, stream), error => callback(error, undefined as never)); });
   });
@@ -203,19 +201,19 @@ export async function writeLiteralArchive(root: string, destination: string, opt
     const handle = await open(temporary, 'r+');
     try {
       const stats = await handle.stat();
-      if (!stats.isFile() || stats.size > maxTotalBytes + 512 * 1024 ** 2) throw new StorageError('limit-exceeded');
+      if (!stats.isFile() || stats.size > spec.archiveBytes) throw new StorageError('limit-exceeded');
       await handle.sync();
       publishedIdentity = stats;
     } finally { await handle.close(); }
     checkAbort(options.signal);
-    const inventoryAfter = await inventory(rootPath, maxTotalBytes, options.signal);
+    const inventoryAfter = await inventory(rootPath, spec, maxTotalBytes, options.signal);
     if (JSON.stringify(inventoryAfter.manifest) !== JSON.stringify(inventoryBefore.manifest)
         || JSON.stringify(inventoryAfter.sources) !== JSON.stringify(inventoryBefore.sources)) invalid();
     checkAbort(options.signal);
     const previewOptions = options.signal
       ? { signal: options.signal, maxExpandedBytes: maxTotalBytes }
       : { maxExpandedBytes: maxTotalBytes };
-    await previewLiteralArchive(temporary, previewOptions);
+    await previewTreeArchive(temporary, spec, previewOptions);
     checkAbort(options.signal);
     const verified = await lstat(temporary);
     if (!verified.isFile() || verified.dev !== publishedIdentity.dev || verified.ino !== publishedIdentity.ino
@@ -235,4 +233,8 @@ export async function writeLiteralArchive(root: string, destination: string, opt
     directories: manifest.entries.filter(item => item.type === 'directory').length,
     symlinks: manifest.entries.filter(item => item.type === 'symlink').length,
     totalBytes: manifest.totalBytes });
+}
+
+export async function writeLiteralArchive(root: string, destination: string, options: LiteralWriterOptions = {}): Promise<LiteralWriterResult> {
+  return writeTreeArchive(root, destination, LITERAL_ARCHIVE_SPEC, options);
 }

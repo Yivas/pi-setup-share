@@ -3,13 +3,9 @@ import { constants } from 'node:fs';
 import { lstat, open, type FileHandle } from 'node:fs/promises';
 import { crc32 } from 'node:zlib';
 import * as yauzl from 'yauzl';
-import { LITERAL_MANIFEST_LIMITS, validateLiteralManifest, type LiteralManifest } from './literal-manifest.ts';
+import { LITERAL_ARCHIVE_SPEC, type LiteralManifest, type TreeArchiveSpec } from './literal-manifest.ts';
 import { StorageError } from './storage.ts';
 
-const MANIFEST_NAME = 'manifest.json';
-const MANIFEST_BYTES = 128 * 1024 ** 2;
-const DEFAULT_PREVIEW_BYTES = 256 * 1024 ** 2;
-const ARCHIVE_BYTES = LITERAL_MANIFEST_LIMITS.totalBytes + 512 * 1024 ** 2;
 const ALLOWED_FLAGS = 0x0008 | 0x0800;
 
 export type LiteralPreviewOptions = Readonly<{ signal?: AbortSignal; maxExpandedBytes?: number }>;
@@ -46,8 +42,8 @@ function uint64(bytes: Buffer, offset: number): number {
 }
 
 // Require a single contiguous central directory and an EOCD exactly at EOF.
-async function layout(file: FileHandle, fileSize: number): Promise<{ offset: number; end: number; count: number }> {
-  if (fileSize < 22 || fileSize > ARCHIVE_BYTES) throw new StorageError('limit-exceeded');
+async function layout(file: FileHandle, fileSize: number, spec: TreeArchiveSpec): Promise<{ offset: number; end: number; count: number }> {
+  if (fileSize < 22 || fileSize > spec.archiveBytes) throw new StorageError('limit-exceeded');
   const end = await bytesAt(file, fileSize - 22, 22);
   if (end.readUInt32LE(0) !== 0x06054b50 || end.readUInt16LE(4) !== 0 || end.readUInt16LE(6) !== 0
       || end.readUInt16LE(8) !== end.readUInt16LE(10) || end.readUInt16LE(20) !== 0) invalid();
@@ -71,7 +67,7 @@ async function layout(file: FileHandle, fileSize: number): Promise<{ offset: num
     size = uint64(zip64, 40);
     offset = uint64(zip64, 48);
   }
-  if (count < 1 || count > LITERAL_MANIFEST_LIMITS.entries + 1 || offset + size !== directoryEnd
+  if (count < 1 || count > spec.maxEntries + 1 || offset + size !== directoryEnd
       || size < count * 46 || size > 256 * 1024 ** 2) invalid();
   return { offset, end: directoryEnd, count };
 }
@@ -161,12 +157,13 @@ function entryName(entry: yauzl.Entry, expected: string, maxBytes: number): Map<
 }
 
 // Preview never extracts, executes or installs anything; returned data excludes paths and contents.
-export async function previewLiteralArchive(path: string, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+// One reader serves every versioned tree format; the spec fixes the marker, entry names and quotas.
+export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
   const { signal } = options;
   checkAbort(signal);
-  const maxExpandedBytes = options.maxExpandedBytes ?? DEFAULT_PREVIEW_BYTES;
+  const maxExpandedBytes = options.maxExpandedBytes ?? spec.defaultPreviewBytes;
   if (!Number.isSafeInteger(maxExpandedBytes) || maxExpandedBytes < 0
-      || maxExpandedBytes > LITERAL_MANIFEST_LIMITS.totalBytes) throw new StorageError('limit-exceeded');
+      || maxExpandedBytes > spec.totalBytesLimit) throw new StorageError('limit-exceeded');
   let file: FileHandle | undefined;
   try {
     const before = await lstat(path);
@@ -175,7 +172,7 @@ export async function previewLiteralArchive(path: string, options: LiteralPrevie
     const opened = await file.stat();
     if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino
         || opened.size !== before.size || opened.mtimeMs !== before.mtimeMs) invalid();
-    const central = await layout(file, opened.size);
+    const central = await layout(file, opened.size, spec);
     const zip = await yauzl.fromFdPromise(file.fd, {
       autoClose: false, lazyEntries: true, decodeStrings: true, validateEntrySizes: true, strictFileNames: true,
     });
@@ -197,7 +194,7 @@ export async function previewLiteralArchive(path: string, options: LiteralPrevie
           || header.readUInt16LE(30) !== entry.extraFieldLength || header.readUInt16LE(32) !== entry.fileCommentLength) invalid();
       centralCursor += 46 + entry.fileNameLength + entry.extraFieldLength + entry.fileCommentLength;
       if (centralCursor > central.end) invalid();
-      const expectedName = seen === 1 ? MANIFEST_NAME : `payload/${String(seen - 1).padStart(6, '0')}`;
+      const expectedName = seen === 1 ? spec.manifestName : `${spec.payloadPrefix}${String(seen - 1).padStart(6, '0')}`;
       const centralExtras = entryName(entry, expectedName, 32);
       const centralZip64 = centralExtras.get(0x0001);
       // Our writer stores [uncompressed, compressed, localOffset] in the central ZIP64 extra when forced.
@@ -225,10 +222,10 @@ export async function previewLiteralArchive(path: string, options: LiteralPrevie
       localCursor = dataEnd + await descriptorSize(file, entry, dataEnd, central.offset, Boolean(zip64) || Boolean(centralZip64));
       if (localCursor > central.offset) invalid();
       if (seen === 1) {
-        if (entry.uncompressedSize > MANIFEST_BYTES) throw new StorageError('limit-exceeded');
-        const raw = await digestEntry(zip, entry, MANIFEST_BYTES, undefined, signal);
+        if (entry.uncompressedSize > spec.manifestBytes) throw new StorageError('limit-exceeded');
+        const raw = await digestEntry(zip, entry, spec.manifestBytes, undefined, signal);
         if (!raw || raw.toString('utf8') !== new TextDecoder('utf-8', { fatal: true }).decode(raw)) invalid();
-        manifest = validateLiteralManifest(JSON.parse(raw.toString('utf8')));
+        manifest = spec.validateManifest(JSON.parse(raw.toString('utf8')));
         for (const item of manifest.entries) {
           if (item.type === 'file') fileEntries.push({ size: item.size, sha256: item.sha256 });
           if (item.type === 'directory') directories++;
@@ -257,4 +254,8 @@ export async function previewLiteralArchive(path: string, options: LiteralPrevie
   } finally {
     await file?.close();
   }
+}
+
+export async function previewLiteralArchive(path: string, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+  return previewTreeArchive(path, LITERAL_ARCHIVE_SPEC, options);
 }

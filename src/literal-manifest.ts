@@ -10,12 +10,17 @@ export const LITERAL_MANIFEST_LIMITS = Object.freeze({
   depth: 64,
 });
 
+// One tree manifest shape serves both versioned formats; the marker keeps their readers apart.
+export const LITERAL_FORMAT = 'pi-setup-share-literal' as const;
+export const BACKUP_FORMAT = 'pi-setup-share-receiver-backup' as const;
+export type TreeManifestFormat = typeof LITERAL_FORMAT | typeof BACKUP_FORMAT;
+
 type LiteralFile = Readonly<{ path: string; type: 'file'; mode: number; size: number; sha256: string }>;
 type LiteralDirectory = Readonly<{ path: string; type: 'directory'; mode: number }>;
 type LiteralSymlink = Readonly<{ path: string; type: 'symlink'; target: string }>;
 export type LiteralEntry = LiteralFile | LiteralDirectory | LiteralSymlink;
 export type LiteralManifest = Readonly<{
-  format: 'pi-setup-share-literal';
+  format: TreeManifestFormat;
   version: 1;
   root: 'agentDir';
   sourcePlatform: 'win32' | 'darwin' | 'linux';
@@ -56,10 +61,10 @@ function validateLinkTarget(target: unknown): asserts target is string {
 }
 
 // This boundary validates a manifest only; the ZIP reader must separately verify every byte and entry.
-export function validateLiteralManifest(value: unknown): LiteralManifest {
+export function validateTreeManifest(value: unknown, format: TreeManifestFormat): LiteralManifest {
   try {
     requireRecord(value, ['format', 'version', 'root', 'sourcePlatform', 'totalBytes', 'entries'], 'manifest');
-    if (value.format !== 'pi-setup-share-literal' || value.version !== 1 || value.root !== 'agentDir'
+    if (value.format !== format || value.version !== 1 || value.root !== 'agentDir'
         || !['win32', 'darwin', 'linux'].includes(value.sourcePlatform as string)) invalid('invalid-state');
     numberInRange(value.totalBytes, LITERAL_MANIFEST_LIMITS.totalBytes);
     requireDataArray(value.entries, LITERAL_MANIFEST_LIMITS.entries, 'entries');
@@ -141,7 +146,7 @@ export function validateLiteralManifest(value: unknown): LiteralManifest {
       return destination;
     }
     for (const entry of entries) if (entry.type === 'symlink') resolveLink(entry, 0);
-    return Object.freeze({ format: 'pi-setup-share-literal', version: 1, root: 'agentDir',
+    return Object.freeze({ format, version: 1, root: 'agentDir',
       sourcePlatform: value.sourcePlatform as LiteralManifest['sourcePlatform'], totalBytes: total,
       entries: Object.freeze(entries) });
   } catch (error) {
@@ -149,3 +154,40 @@ export function validateLiteralManifest(value: unknown): LiteralManifest {
     throw error;
   }
 }
+
+export function validateLiteralManifest(value: unknown): LiteralManifest {
+  return validateTreeManifest(value, LITERAL_FORMAT);
+}
+
+export function validateBackupManifest(value: unknown): LiteralManifest {
+  return validateTreeManifest(value, BACKUP_FORMAT);
+}
+
+// One reader and one writer serve both formats; the spec fixes the marker, the entry names and the quotas.
+export type TreeArchiveSpec = Readonly<{
+  format: TreeManifestFormat;
+  manifestName: string;
+  payloadPrefix: string;
+  validateManifest(value: unknown): LiteralManifest;
+  archiveBytes: number;
+  manifestBytes: number;
+  maxEntries: number;
+  totalBytesLimit: number;
+  defaultPreviewBytes: number;
+}>;
+
+const ARCHIVE_OVERHEAD = 512 * 1024 ** 2;
+export const LITERAL_ARCHIVE_SPEC: TreeArchiveSpec = Object.freeze({
+  format: LITERAL_FORMAT, manifestName: 'manifest.json', payloadPrefix: 'payload/',
+  validateManifest: (value: unknown) => validateLiteralManifest(value),
+  archiveBytes: LITERAL_MANIFEST_LIMITS.totalBytes + ARCHIVE_OVERHEAD, manifestBytes: 128 * 1024 ** 2,
+  maxEntries: LITERAL_MANIFEST_LIMITS.entries, totalBytesLimit: LITERAL_MANIFEST_LIMITS.totalBytes,
+  defaultPreviewBytes: 256 * 1024 ** 2,
+});
+export const BACKUP_ARCHIVE_SPEC: TreeArchiveSpec = Object.freeze({
+  format: BACKUP_FORMAT, manifestName: 'manifest.json', payloadPrefix: 'payload/',
+  validateManifest: (value: unknown) => validateBackupManifest(value),
+  archiveBytes: LITERAL_MANIFEST_LIMITS.totalBytes + ARCHIVE_OVERHEAD, manifestBytes: 128 * 1024 ** 2,
+  maxEntries: LITERAL_MANIFEST_LIMITS.entries, totalBytesLimit: LITERAL_MANIFEST_LIMITS.totalBytes,
+  defaultPreviewBytes: 256 * 1024 ** 2,
+});
