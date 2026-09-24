@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { previewReceiverBackup, writeReceiverBackup } from '../src/literal-backup.ts';
+import { materializeReceiverBackup, previewReceiverBackup, writeReceiverBackup } from '../src/literal-backup.ts';
 import { previewLiteralArchive } from '../src/literal-archive.ts';
 import { writeLiteralArchive } from '../src/literal-writer.ts';
 
@@ -45,5 +45,21 @@ test('rejects a truncated backup and never replaces an existing file', async () 
     await assert.rejects(previewReceiverBackup(truncated), { code: 'invalid-state' });
     await assert.rejects(writeReceiverBackup(root, output), { code: 'unsafe-path' });
     assert.deepEqual(await readFile(output), archive);
+  });
+});
+
+test('materializes a receiver backup and refuses a literal archive', async () => {
+  await fixture(async (root, output) => {
+    await writeReceiverBackup(root, output);
+    const restored = join(output, '..', 'restored');
+    const result = await materializeReceiverBackup(output, restored);
+    assert.equal(result.files, 2);
+    assert.equal(await readFile(join(restored, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await readFile(join(restored, 'sessions', 'history.jsonl'), 'utf8'), '{"synthetic":"history"}\n');
+    const literal = join(output, '..', 'literal.zip');
+    await writeLiteralArchive(root, literal);
+    const wrong = join(output, '..', 'wrong');
+    await assert.rejects(materializeReceiverBackup(literal, wrong), { code: 'invalid-state' });
+    assert.equal(await lstat(wrong).then(() => true, () => false), false);
   });
 });

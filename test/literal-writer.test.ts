@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { link, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { previewLiteralArchive } from '../src/literal-archive.ts';
+import { materializeLiteralArchive, previewLiteralArchive } from '../src/literal-archive.ts';
 import { writeLiteralArchive } from '../src/literal-writer.ts';
 
 async function fixture(run: (root: string, output: string) => Promise<void>): Promise<void> {
@@ -105,5 +105,33 @@ test('refuses a symlinked root and a destination inside the root', async () => {
     const linked = `${root}-link`;
     await symlink(root, linked, process.platform === 'win32' ? 'junction' : 'dir');
     await assert.rejects(writeLiteralArchive(linked, output), { code: 'unsafe-path' });
+  });
+});
+
+test('materializes a verified archive into a fresh private directory', async () => {
+  await fixture(async (root, output) => {
+    const totalBytes = await syntheticTree(root);
+    await writeLiteralArchive(root, output);
+    const destination = join(output, '..', 'staged');
+    const result = await materializeLiteralArchive(output, destination);
+    assert.deepEqual(result, { sourcePlatform: process.platform, files: 2, directories: 2, symlinks: 0, totalBytes });
+    assert.equal(await readFile(join(destination, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await readFile(join(destination, 'nested', 'note.txt'), 'utf8'), 'synthetic note\n');
+    assert.equal((await readdir(join(destination, 'nested'))).includes('empty'), true);
+  });
+});
+
+test('refuses an existing staging destination and removes a partial one after cancellation', async () => {
+  await fixture(async (root, output) => {
+    await syntheticTree(root);
+    await writeLiteralArchive(root, output);
+    const existing = join(output, '..', 'existing');
+    await mkdir(existing);
+    await assert.rejects(materializeLiteralArchive(output, existing), { code: 'unsafe-path' });
+    const aborted = join(output, '..', 'aborted');
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(materializeLiteralArchive(output, aborted, { signal: controller.signal }), { code: 'aborted' });
+    assert.equal(await lstat(aborted).then(() => true, () => false), false);
   });
 });

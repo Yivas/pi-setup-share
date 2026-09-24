@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, type FileHandle } from 'node:fs/promises';
+import { lstat, mkdir, open, rm, symlink, type FileHandle } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { crc32 } from 'node:zlib';
 import * as yauzl from 'yauzl';
 import { LITERAL_ARCHIVE_SPEC, type LiteralManifest, type TreeArchiveSpec } from './literal-manifest.ts';
@@ -9,6 +10,13 @@ import { StorageError } from './storage.ts';
 const ALLOWED_FLAGS = 0x0008 | 0x0800;
 
 export type LiteralPreviewOptions = Readonly<{ signal?: AbortSignal; maxExpandedBytes?: number }>;
+
+// The second pass materializes a verified tree; the first pass only reports counts.
+type TreeVisitor = Readonly<{
+  directory(path: string, mode: number): Promise<void>;
+  symlink(path: string, target: string): Promise<void>;
+  file(path: string, mode: number): Promise<{ write(chunk: Buffer): Promise<void>; close(): Promise<void> }>;
+}>;
 
 export type LiteralPreview = Readonly<{
   sourcePlatform: LiteralManifest['sourcePlatform'];
@@ -97,7 +105,7 @@ async function descriptorSize(file: FileHandle, entry: yauzl.Entry, start: numbe
 }
 
 async function digestEntry(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number,
-  expectedSha?: string, signal?: AbortSignal): Promise<Buffer | undefined> {
+  expectedSha?: string, signal?: AbortSignal, sink?: (chunk: Buffer) => Promise<void>): Promise<Buffer | undefined> {
   checkAbort(signal);
   const stream = await zip.openReadStreamPromise(entry);
   const hash = createHash('sha256');
@@ -114,6 +122,7 @@ async function digestEntry(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number
       if (total > limit || total > entry.uncompressedSize) throw new StorageError('limit-exceeded');
       hash.update(bytes);
       crc = crc32(bytes, crc);
+      if (sink) await sink(bytes);
       chunks?.push(bytes);
     }
   } catch (error) {
@@ -158,7 +167,7 @@ function entryName(entry: yauzl.Entry, expected: string, maxBytes: number): Map<
 
 // Preview never extracts, executes or installs anything; returned data excludes paths and contents.
 // One reader serves every versioned tree format; the spec fixes the marker, entry names and quotas.
-export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+async function walkTreeArchive(path: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}, visitor?: TreeVisitor): Promise<LiteralPreview> {
   const { signal } = options;
   checkAbort(signal);
   const maxExpandedBytes = options.maxExpandedBytes ?? spec.defaultPreviewBytes;
@@ -184,7 +193,7 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
     let directories = 0;
     let symlinks = 0;
     let seen = 0;
-    const fileEntries: { size: number; sha256: string }[] = [];
+    const fileEntries: { path: string; mode: number; size: number; sha256: string }[] = [];
     for await (const entry of zip.eachEntry()) {
       checkAbort(signal);
       seen++;
@@ -227,16 +236,28 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
         if (!raw || raw.toString('utf8') !== new TextDecoder('utf-8', { fatal: true }).decode(raw)) invalid();
         manifest = spec.validateManifest(JSON.parse(raw.toString('utf8')));
         for (const item of manifest.entries) {
-          if (item.type === 'file') fileEntries.push({ size: item.size, sha256: item.sha256 });
-          if (item.type === 'directory') directories++;
-          if (item.type === 'symlink') symlinks++;
+          if (item.type === 'file') fileEntries.push({ path: item.path, mode: item.mode, size: item.size, sha256: item.sha256 });
+          if (item.type === 'directory') {
+            directories++;
+            await visitor?.directory(item.path, item.mode);
+          }
+          if (item.type === 'symlink') {
+            symlinks++;
+            await visitor?.symlink(item.path, item.target);
+          }
         }
         if (central.count !== fileEntries.length + 1) invalid();
         if (manifest.totalBytes > maxExpandedBytes) throw new StorageError('limit-exceeded');
       } else {
         const expected = fileEntries[seen - 2];
         if (!expected || entry.uncompressedSize !== expected.size) invalid();
-        await digestEntry(zip, entry, expected.size, expected.sha256, signal);
+        const writer = visitor ? await visitor.file(expected.path, expected.mode) : undefined;
+        try {
+          await digestEntry(zip, entry, expected.size, expected.sha256, signal,
+            writer ? (chunk: Buffer) => writer.write(chunk) : undefined);
+        } finally {
+          await writer?.close();
+        }
         files++;
       }
     }
@@ -257,5 +278,44 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
 }
 
 export async function previewLiteralArchive(path: string, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
-  return previewTreeArchive(path, LITERAL_ARCHIVE_SPEC, options);
+  return walkTreeArchive(path, LITERAL_ARCHIVE_SPEC, options);
+}
+
+export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+  return walkTreeArchive(path, spec, options);
+}
+
+// Second pass: materializes a verified archive into a private directory that must not exist yet.
+// Every path comes from the validated manifest, contents are hashed while writing, and a failure
+// removes the new directory instead of leaving a partial tree. Recreating symlinks needs a privilege
+// on Windows, so that format is refused there by the operating system and reported as invalid-state.
+export async function materializeTreeArchive(path: string, destination: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+  if (typeof destination !== 'string' || !isAbsolute(destination)) throw new StorageError('unsafe-path');
+  try {
+    await mkdir(destination, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') throw new StorageError('unsafe-path');
+    throw new StorageError('unavailable');
+  }
+  const visitor: TreeVisitor = {
+    async directory(relative, mode) { await mkdir(join(destination, relative), { mode: mode || 0o700 }); },
+    async symlink(relative, target) { await symlink(target, join(destination, relative)); },
+    async file(relative, mode) {
+      const handle = await open(join(destination, relative), 'wx', mode || 0o600);
+      return {
+        write: async (chunk: Buffer) => { await handle.write(chunk); },
+        close: async () => { await handle.close(); },
+      };
+    },
+  };
+  try {
+    return await walkTreeArchive(path, spec, options, visitor);
+  } catch (error) {
+    await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function materializeLiteralArchive(path: string, destination: string, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+  return materializeTreeArchive(path, destination, LITERAL_ARCHIVE_SPEC, options);
 }
