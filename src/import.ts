@@ -4,7 +4,8 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { serializeProfile } from './export.ts';
 import { parseBoundedJson, stringifyBounded } from './json.ts';
-import { previewConfiguration, type PreviewItem, type TargetConfiguration } from './preview.ts';
+import { packageIdentity } from './packages.ts';
+import { previewConfiguration, type ConflictDecision, type PreviewItem, type TargetConfiguration } from './preview.ts';
 import { parseProfile, PROFILE_LIMITS, validateProfile, type ResourceProfile } from './profile.ts';
 import { digest, FileStore, StorageError, type FileSnapshot } from './storage.ts';
 import { appliedTransactionsFor, commitChanges, isImportId, restoreChain, type FileChange } from './transaction.ts';
@@ -20,6 +21,8 @@ interface ImportManifest {
   activationTransactionId?: string;
   installationTransactionId?: string;
   installationReceipt?: { packageSources: string[] };
+  // Best-effort diagnosis of unmanaged top-level entries created while installing; never a rollback claim.
+  externalEffects?: string[];
 }
 export interface StagingPlan {
   readonly kind: 'staging';
@@ -82,7 +85,7 @@ async function checkRecovery(store: FileStore): Promise<void> {
 function decodeManifest(bytes: Buffer | null, importId: string): ImportManifest {
   if (!bytes) throw new StorageError('invalid-state');
   const value = parseBoundedJson(bytes.toString('utf8'), manifestLimit);
-  requireRecord(value, ['format', 'version', 'importId', 'profileHash', 'state', 'stageTransactionId'], 'manifest', ['activationTransactionId', 'installationTransactionId', 'installationReceipt']);
+  requireRecord(value, ['format', 'version', 'importId', 'profileHash', 'state', 'stageTransactionId'], 'manifest', ['activationTransactionId', 'installationTransactionId', 'installationReceipt', 'externalEffects']);
   if (value.format !== 'pi-setup-share-import' || value.version !== 1 || value.importId !== importId
       || value.stageTransactionId !== importId || typeof value.profileHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.profileHash)
       || (value.state !== 'staged' && value.state !== 'active')) throw new StorageError('invalid-state');
@@ -97,6 +100,14 @@ function decodeManifest(bytes: Buffer | null, importId: string): ImportManifest 
     const sources = value.installationReceipt.packageSources;
     if (!Array.isArray(sources) || !sources.length || sources.length > 64 || new Set(sources).size !== sources.length) throw new StorageError('invalid-state');
     for (const source of sources) validatePackageSource(source, importId);
+  }
+  if (Object.hasOwn(value, 'externalEffects')) {
+    const effects = value.externalEffects;
+    if (!installed || !Array.isArray(effects) || !effects.length || effects.length > 64 || new Set(effects).size !== effects.length) throw new StorageError('invalid-state');
+    for (const name of effects) {
+      if (typeof name !== 'string' || Buffer.byteLength(name) > 240 || name !== name.normalize('NFC')
+          || name === '.' || name === '..' || /[\p{C}/\\<>:"|?*]/u.test(name) || /[. ]$/.test(name)) throw new StorageError('unsafe-path');
+    }
   }
   return value as unknown as ImportManifest;
 }
@@ -278,12 +289,15 @@ export async function installPackages(store: FileStore, plan: InstallationPlan, 
     throw new StorageError('unavailable');
   }
   // The directory is a permanent attempt marker, not a sandbox or a rollback target.
+  const beforeEntries = await topLevelEntries(store);
+  let currentSource: string | undefined;
   try {
     checkConsent(consent, signal);
     const installer = await factory(packageStore);
     const profile = parseProfile(prepared.profileText);
     const packageSources: string[] = [];
     for (const package_ of profile.packages ?? []) {
+      currentSource = package_.source;
       checkConsent(consent, signal);
       await installer.install(package_.source);
       checkConsent(consent, signal);
@@ -298,14 +312,39 @@ export async function installPackages(store: FileStore, plan: InstallationPlan, 
     await readImport(store, plan.importId);
     for (const source of packageSources) await verifyPackageDirectory(store, plan.importId, source);
     if (!await store.matches(`${base}/profile.json`, prepared.profileSnapshot)) throw new StorageError('changed');
+    const externalEffects = [...await topLevelEntries(store)].filter(name => !beforeEntries.has(name)).sort();
+    if (externalEffects.length > 64) throw new StorageError('limit-exceeded');
     const transactionId = randomUUID();
-    const manifest: ImportManifest = { ...prepared.manifest, installationTransactionId: transactionId, installationReceipt: { packageSources } };
+    const manifest: ImportManifest = { ...prepared.manifest, installationTransactionId: transactionId,
+      installationReceipt: { packageSources }, ...(externalEffects.length ? { externalEffects } : {}) };
     await commitChanges(store, [{ path: `${base}/manifest.json`, bytes: jsonBytes(manifest, manifestLimit), before: prepared.manifestSnapshot }], true, signal, transactionId);
     return { importId: plan.importId, state: 'staged' };
   } catch (error) {
     if (error instanceof StorageError) throw error;
-    throw new StorageError('installation-abandoned');
+    throw new StorageError('installation-abandoned', currentSource);
   }
+}
+
+// Top-level names under the store root; used only to diagnose unmanaged additions during installation.
+async function topLevelEntries(store: FileStore): Promise<Set<string>> {
+  const names = new Set<string>();
+  let directory;
+  try { directory = await opendir(store.root); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return names;
+    throw new StorageError('unavailable');
+  }
+  for await (const entry of directory) names.add(entry.name);
+  return names;
+}
+
+// Pinned npm/Git sources share one identity across versions; other references only match themselves.
+function referenceIdentity(entry: unknown): string {
+  const source = typeof entry === 'string' ? entry
+    : entry !== null && typeof entry === 'object' && !Array.isArray(entry) && typeof (entry as { source?: unknown }).source === 'string'
+      ? (entry as { source: string }).source : undefined;
+  if (source === undefined) return `opaque:${JSON.stringify(entry) ?? 'unrepresentable'}`;
+  try { return packageIdentity(source); } catch { return source; }
 }
 
 function addReferences(profile: ResourceProfile, importId: string, settings: Record<string, unknown>, decisions: Record<string, unknown>, packageSources: readonly string[]): PreviewItem[] {
@@ -313,28 +352,58 @@ function addReferences(profile: ResourceProfile, importId: string, settings: Rec
   const known = new Set<string>();
   const baseline = { ...settings };
   const base = `./${basePath(importId)}`;
+  function decide(id: string): ConflictDecision {
+    const raw = Object.hasOwn(decisions, id) ? decisions[id] : 'preserve';
+    if (raw !== 'preserve' && raw !== 'overwrite' && raw !== 'skip') throw new StorageError('invalid-state');
+    return raw;
+  }
+  function report(id: string, status: PreviewItem['status'], decision: ConflictDecision, write: boolean): void {
+    items.push({ id, status, action: decision === 'skip' ? 'skip' : write ? 'write' : 'preserve' });
+  }
   function append(key: string, incoming: unknown[], id: string): void {
     if (!incoming.length) return;
     known.add(id);
-    const decision = Object.hasOwn(decisions, id) ? decisions[id] : 'preserve';
-    if (decision !== 'preserve' && decision !== 'overwrite') throw new StorageError('invalid-state');
+    const decision = decide(id);
     const existing = baseline[key];
-    const valid = Array.isArray(existing) && (key === 'packages' || existing.every(entry => typeof entry === 'string'));
+    const valid = Array.isArray(existing) && existing.every(entry => typeof entry === 'string');
     const missing = !Object.hasOwn(baseline, key);
     const same = valid && incoming.every(entry => existing.some(current => isDeepStrictEqual(current, entry)));
-    const status = missing ? 'new' : !valid ? 'conflict' : same ? 'same' : 'new';
-    const write = status === 'new' || (status === 'conflict' && decision === 'overwrite');
-    items.push({ id, status, action: write ? 'write' : 'preserve' });
-    if (write) {
-      const current: unknown[] = Array.isArray(settings[key]) ? settings[key] : [];
-      settings[key] = [...current, ...incoming.filter(entry => !current.some(value => isDeepStrictEqual(value, entry)))];
-    }
+    const status: PreviewItem['status'] = missing ? 'new' : !valid ? 'conflict' : same ? 'same' : 'new';
+    const write = decision !== 'skip' && (status === 'new' || (status === 'conflict' && decision === 'overwrite'));
+    report(id, status, decision, write);
+    if (!write) return;
+    const current: unknown[] = Array.isArray(settings[key]) ? settings[key] : [];
+    settings[key] = [...current, ...incoming.filter(entry => !current.some(value => isDeepStrictEqual(value, entry)))];
+  }
+  // Packages are reported per declared identity: a receiver package with the same identity but another
+  // version is one conflict, and overwriting replaces exactly that entry instead of appending a duplicate.
+  function appendPackage(declared: string, installed: unknown, id: string): void {
+    known.add(id);
+    const decision = decide(id);
+    const existing = baseline.packages;
+    const valid = Array.isArray(existing);
+    const missing = !Object.hasOwn(baseline, 'packages');
+    const identity = referenceIdentity(declared);
+    const sameIndex = valid ? existing.findIndex(entry => isDeepStrictEqual(entry, installed)) : -1;
+    const identityIndex = valid ? existing.findIndex(entry => referenceIdentity(entry) === identity) : -1;
+    const status: PreviewItem['status'] = missing ? 'new' : !valid ? 'conflict' : sameIndex >= 0 ? 'same' : identityIndex >= 0 ? 'conflict' : 'new';
+    const write = decision !== 'skip' && (status === 'new' || (status === 'conflict' && decision === 'overwrite'));
+    report(id, status, decision, write);
+    if (!write) return;
+    const current: unknown[] = Array.isArray(settings.packages) ? [...settings.packages] : [];
+    if (status === 'conflict' && identityIndex >= 0) current.splice(identityIndex, 1, installed);
+    else current.push(installed);
+    settings.packages = current;
   }
   for (const [kind, setting] of [['extension', 'extensions'], ['skill', 'skills'], ['prompt', 'prompts'], ['theme', 'themes']] as const) {
     append(setting, (profile.entrypoints?.[kind] ?? []).map(path => `${base}/resources/${kind}/${path}`), `resources.${kind}`);
   }
   if (agentDirectories(profile).length) append('packages', [{ source: `${base}/agents-package`, extensions: [], skills: [], prompts: [], themes: [] }], 'resources.agent');
-  if (packageSources.length) append('packages', (profile.packages ?? []).map((package_, index) => ({ ...package_, source: packageSources[index] })), 'packages');
+  (profile.packages ?? []).forEach((package_, index) => {
+    const installed = packageSources[index];
+    if (!installed) return;
+    appendPackage(package_.source, { ...package_, source: installed }, `packages:${referenceIdentity(package_.source)}`);
+  });
   if (Object.keys(decisions).some(key => !known.has(key))) throw new StorageError('invalid-state');
   return items;
 }
@@ -390,6 +459,7 @@ export interface ImportStatusSummary {
   readonly state: 'staged' | 'installed' | 'active' | 'installation-abandoned';
   readonly resources: number;
   readonly packages: number;
+  readonly externalEffects?: readonly string[];
 }
 
 // Discovery returns IDs only. Selection must call inspectImport before offering a lifecycle action.
@@ -434,7 +504,8 @@ export async function inspectImport(store: FileStore, importId: string): Promise
       }
     }
   }
-  return Object.freeze({ importId, state, resources: profile.resources.length, packages: profile.packages?.length ?? 0 });
+  return Object.freeze({ importId, state, resources: profile.resources.length, packages: profile.packages?.length ?? 0,
+    ...(manifest.externalEffects ? { externalEffects: manifest.externalEffects } : {}) });
 }
 
 export async function restoreImport(store: FileStore, importId: string, consent: boolean): Promise<void> {

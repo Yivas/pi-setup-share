@@ -12,12 +12,12 @@ import { FileStore } from '../src/storage.ts';
 import { runSetupShare } from '../src/ui.ts';
 
 type Choice = boolean | { count: number; include: number[] };
-function context(menu: (string | ((options: string[]) => string))[], inputs: string[], choices: Choice[], confirms: boolean[] = []) {
+function context(menu: (string | ((options: string[]) => string))[], inputs: string[], choices: Choice[], confirms: boolean[] = [], viewport: { width: number; rows: number } = { width: 80, rows: 24 }) {
   const notifications: string[] = [];
   const screens: string[] = [];
   const menus: string[][] = [];
   const theme = { fg: (_color: string, text: string) => text } as unknown as Theme;
-  const tui = { terminal: { rows: 24 }, requestRender() {} } as unknown as TUI;
+  const tui = { terminal: { rows: viewport.rows }, requestRender() {} } as unknown as TUI;
   const ctx = { mode: 'tui', hasUI: true, ui: {
     select: async (_title: string, options: string[]) => { menus.push(options); const next = menu.shift(); return typeof next === 'function' ? next(options) : next; },
     input: async () => inputs.shift(),
@@ -25,9 +25,19 @@ function context(menu: (string | ((options: string[]) => string))[], inputs: str
     notify: (message: string) => notifications.push(message),
     custom: (factory: (tui: TUI, theme: Theme, keys: unknown, done: (result: unknown) => void) => Component) => new Promise(resolve => {
       const component = factory(tui, theme, {}, resolve);
-      const rendered = component.render(80).join('\n');
+      const rendered = component.render(viewport.width).join('\n');
       screens.push(rendered);
-      if (rendered.startsWith(en.review)) { component.handleInput?.('\r'); return; }
+      if (rendered.startsWith(en.review)) {
+        let page = rendered;
+        for (let guard = 0; guard < 100 && page.includes(`  ${en.next}`); guard++) {
+          component.handleInput?.('\x1b[B');
+          component.handleInput?.('\r');
+          page = component.render(viewport.width).join('\n');
+          screens.push(page);
+        }
+        component.handleInput?.('\r');
+        return;
+      }
       if (rendered.includes(en.working) || rendered.includes(en.installing) || rendered.includes(en.reading)) return;
       const choice = choices.shift();
       assert.notEqual(choice, undefined, 'unexpected dialog');
@@ -47,6 +57,23 @@ function context(menu: (string | ((options: string[]) => string))[], inputs: str
 }
 const noInstall: PackageInstallerFactory = () => { throw new Error('unexpected installation'); };
 const profile = { format: 'pi-setup-share', version: 1, resources: [], preferences: { quietStartup: true } };
+const isolatedInstaller: PackageInstallerFactory = packageStore => ({
+  install: async () => { await mkdir(join(packageStore, 'installed')); },
+  getInstalledPath: () => join(packageStore, 'installed'),
+});
+async function conflictFixture(root: string, agent: string): Promise<string> {
+  await writeFile(join(agent, 'settings.json'), JSON.stringify({ quietStartup: false, prompts: false, packages: [{ source: 'npm:example@9.9.9' }] }));
+  await writeFile(join(agent, 'mcp.json'), JSON.stringify({ mcpServers: { example: { command: 'node', args: ['existing.js'] } } }));
+  const source = join(root, 'conflicts.json');
+  await writeFile(source, JSON.stringify({ format: 'pi-setup-share', version: 1,
+    resources: [{ kind: 'prompt', path: 'hello.md', encoding: 'utf8', content: 'Synthetic' }],
+    entrypoints: { prompt: ['hello.md'] },
+    preferences: { quietStartup: true },
+    packages: [{ source: 'npm:example@1.2.3' }],
+    integrations: { mcpServers: { example: { disabled: true, approveTools: true, command: 'node', args: ['other.js'] } } },
+  }));
+  return source;
+}
 async function fixture(run: (root: string, agent: string, store: FileStore) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'pi-setup-share-ui-'));
   const agent = join(root, 'agent');
@@ -341,4 +368,81 @@ test('export explains omitted MCP servers and selects every portable server at o
 
 test('non-TUI invocation does not access UI, configuration or packages', async () => {
   await runSetupShare({ mode: 'rpc', hasUI: true } as ExtensionCommandContext, '/not-accessed', noInstall);
+});
+
+test('conflicts offer skip per item for packages, resources and MCP', async () => {
+  await fixture(async (root, agent) => {
+    const source = await conflictFixture(root, agent);
+    const ui = context([en.import, ...Array.from({ length: 6 }, () => () => en.preserve)], [source],
+      [{ count: 1, include: [0] }, { count: 2, include: [1] }, { count: 1, include: [0] }, { count: 1, include: [0] }, true, true, true]);
+    await runSetupShare(ui.ctx, agent, isolatedInstaller);
+    const conflictMenus = ui.menus.filter(options => options.includes(en.preserve) && options.includes(en.overwrite));
+    assert.ok(conflictMenus.length >= 3, JSON.stringify(ui.menus));
+    assert.ok(conflictMenus.every(options => options.includes(en.skip)), JSON.stringify(conflictMenus));
+  });
+});
+
+test('activation coverage report distinguishes preserved, replaced and skipped items', async () => {
+  await fixture(async (root, agent) => {
+    const source = await conflictFixture(root, agent);
+    const ui = context([en.import, () => en.preserve, () => en.overwrite, () => en.skip, () => en.skip], [source],
+      [{ count: 1, include: [0] }, { count: 2, include: [1] }, { count: 1, include: [0] }, { count: 1, include: [0] }, true, true, true]);
+    await runSetupShare(ui.ctx, agent, isolatedInstaller);
+    const screens = ui.screens.join('\n');
+    assert.match(screens, /conflict \/ preserve/);
+    assert.match(screens, /conflict \/ write/);
+    assert.match(screens, /\/ skip/);
+  });
+});
+
+test('import flow surfaces an installation failure as a notification', async () => {
+  await fixture(async (root, agent) => {
+    const source = join(root, 'profile.json');
+    await writeFile(source, JSON.stringify({ format: 'pi-setup-share', version: 1, resources: [], packages: [{ source: 'npm:example@1.2.3' }] }));
+    await runSetupShare(context([en.import], [source], [{ count: 1, include: [0] }, true, false]).ctx, agent, noInstall);
+    const failing: PackageInstallerFactory = () => { throw new Error('synthetic private command output'); };
+    const ui = context([en.resume, options => options[0]!], [], [true]);
+    await runSetupShare(ui.ctx, agent, failing);
+    assert.ok(ui.notifications.some(message => message === en.abandoned || message === en.errors['installation-abandoned']));
+    assert.equal(ui.notifications.join('').includes('synthetic private command output'), false);
+  });
+});
+
+test('full import flow renders within 120x40', async () => {
+  await fixture(async (root, agent) => {
+    const source = join(root, 'profile.json');
+    await writeFile(source, JSON.stringify(profile));
+    const ui = context([en.import], [source], [{ count: 1, include: [0] }, true, true], [], { width: 120, rows: 40 });
+    await runSetupShare(ui.ctx, agent, noInstall);
+    assert.ok(ui.screens.some(screen => screen.includes(en.stageTitle)));
+    for (const screen of ui.screens) {
+      const lines = screen.split('\n');
+      assert.ok(lines.length <= 40, JSON.stringify(lines));
+      assert.ok(lines.every(line => line.length <= 120), JSON.stringify(lines));
+    }
+  });
+});
+
+test('future profile version is reported without rejecting the TUI promise', async () => {
+  await fixture(async (root, agent) => {
+    const source = join(root, 'future.json');
+    await writeFile(source, JSON.stringify({ format: 'pi-setup-share', version: 99, resources: [] }));
+    const ui = context([en.import], [source], []);
+    await runSetupShare(ui.ctx, agent, noInstall);
+    assert.ok(ui.notifications.includes(en.invalidProfile));
+  });
+});
+
+test('receiver review lists every manual action of the transfer report', async () => {
+  await fixture(async (root, agent) => {
+    const source = join(root, 'v2-actions.json');
+    const actions = Object.keys(en.receiverActions) as Array<keyof typeof en.receiverActions>;
+    await writeFile(source, JSON.stringify({ format: 'pi-setup-share', version: 2, resources: [],
+      transfer: { scanned: [], partial: [], notExamined: ['project'], omissions: [], actions },
+    }));
+    const ui = context([en.inspect], [source], []);
+    await runSetupShare(ui.ctx, agent, noInstall);
+    const screens = ui.screens.join('\n').replace(/\s+/g, ' ');
+    for (const action of actions) assert.ok(screens.includes(en.receiverActions[action]), action);
+  });
 });

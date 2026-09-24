@@ -2,11 +2,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { validateProfile, type ResourceProfile } from './profile.ts';
 import { ProfileError, requireDataArray, requireDataRecord, requireRecord } from './validation.ts';
 
-export type ConflictDecision = 'preserve' | 'overwrite';
+export type ConflictDecision = 'preserve' | 'overwrite' | 'skip';
 export interface PreviewItem {
   id: string;
   status: 'new' | 'same' | 'conflict';
-  action: 'write' | 'preserve';
+  action: 'write' | 'preserve' | 'skip';
 }
 export interface TargetConfiguration {
   settings?: Record<string, unknown>;
@@ -66,7 +66,7 @@ export function previewConfiguration(
     const section = configuration[sectionName];
     known.add(id);
     const decision = Object.hasOwn(choices, id) ? choices[id] : 'preserve';
-    if (decision !== 'preserve' && decision !== 'overwrite') throw new ProfileError('invalid-content', 'decisions');
+    if (decision !== 'preserve' && decision !== 'overwrite' && decision !== 'skip') throw new ProfileError('invalid-content', 'decisions');
     let parent = baseline[sectionName];
     let blocked = false;
     for (const key of path.slice(0, -1)) {
@@ -81,8 +81,8 @@ export function previewConfiguration(
       existing = existing[key];
     }
     const status = blocked ? 'conflict' : !exists ? 'new' : isDeepStrictEqual(existing, incoming) ? 'same' : 'conflict';
-    const write = status === 'new' || (status === 'conflict' && decision === 'overwrite');
-    items.push({ id, status, action: write ? 'write' : 'preserve' });
+    const write = decision !== 'skip' && (status === 'new' || (status === 'conflict' && decision === 'overwrite'));
+    items.push({ id, status, action: decision === 'skip' ? 'skip' : write ? 'write' : 'preserve' });
     if (!write) return;
     parent = section;
     for (const key of path.slice(0, -1)) {

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { activateImport, applyImport, installPackages, previewActivation, previewImport, previewInstallation, restoreImport, type InstallationPlan, type PackageInstallerFactory } from '../src/import.ts';
+import { activateImport, applyImport, inspectImport, installPackages, previewActivation, previewImport, previewInstallation, restoreImport, type InstallationPlan, type PackageInstallerFactory } from '../src/import.ts';
 import { FileStore, StorageError } from '../src/storage.ts';
 import { appliedTransactionsFor, recoverChanges } from '../src/transaction.ts';
 
@@ -94,7 +94,10 @@ test('activation separately consents to local descriptors, preserving filters, f
     await installPackages(store, await previewInstallation(store, id), true, fake());
     const plan = await previewActivation(store, id);
     assert.equal(plan.deferredPackages, 0);
-    assert.deepEqual(plan.items, [{ id: 'packages', status: 'new', action: 'write' }]);
+    assert.deepEqual(plan.items, [
+      { id: 'packages:npm:synthetic-one', status: 'new', action: 'write' },
+      { id: 'packages:git:https://example.com/team/synthetic', status: 'new', action: 'write' },
+    ]);
     await assert.rejects(activateImport(store, plan, false), { code: 'consent-required' });
     assert.equal((await store.read('settings.json')).bytes, null);
     await activateImport(store, plan, true);
@@ -229,7 +232,8 @@ test('agent and installed-package conflict decisions use one immutable native ba
     const plan = await previewActivation(store, id, { resources: { 'resources.agent': 'overwrite' } });
     assert.deepEqual(plan.items, [
       { id: 'resources.agent', status: 'conflict', action: 'write' },
-      { id: 'packages', status: 'conflict', action: 'preserve' },
+      { id: 'packages:npm:synthetic-one', status: 'conflict', action: 'preserve' },
+      { id: 'packages:git:https://example.com/team/synthetic', status: 'conflict', action: 'preserve' },
     ]);
     await activateImport(store, plan, true);
     const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
@@ -246,7 +250,8 @@ test('agent and installed-package references both append to an initially absent 
     const plan = await previewActivation(store, id);
     assert.deepEqual(plan.items, [
       { id: 'resources.agent', status: 'new', action: 'write' },
-      { id: 'packages', status: 'new', action: 'write' },
+      { id: 'packages:npm:synthetic-one', status: 'new', action: 'write' },
+      { id: 'packages:git:https://example.com/team/synthetic', status: 'new', action: 'write' },
     ]);
     await activateImport(store, plan, true);
     const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
@@ -334,5 +339,96 @@ test('the maximum package count fits a bounded installation receipt', async () =
     assert.equal(plan.sources.length, 64);
     await installPackages(store, plan, true, fake());
     assert.equal((await previewActivation(store, id)).deferredPackages, 0);
+  });
+});
+
+test('an existing receiver package of another version is a per-identity conflict and is never duplicated', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'settings.json'), '{"packages":[{"source":"npm:synthetic-one@2.0.0"}]}\n');
+    const id = await stage(store);
+    await installPackages(store, await previewInstallation(store, id), true, fake());
+    const plan = await previewActivation(store, id);
+    assert.deepEqual(plan.items, [
+      { id: 'packages:npm:synthetic-one', status: 'conflict', action: 'preserve' },
+      { id: 'packages:git:https://example.com/team/synthetic', status: 'new', action: 'write' },
+    ]);
+    await activateImport(store, plan, true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.equal(settings.packages.length, 2);
+    assert.ok(settings.packages.some((entry: { source: string }) => entry.source === 'npm:synthetic-one@2.0.0'));
+    assert.ok(settings.packages.some((entry: { source: string }) => String(entry.source).endsWith('/synthetic-2')));
+    assert.equal(settings.packages.filter((entry: { source: string }) => String(entry.source).endsWith('/synthetic-1')).length, 0);
+  });
+});
+
+test('overwrite replaces exactly the conflicting package identity in place', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'settings.json'), '{"packages":[{"source":"npm:synthetic-one@2.0.0"},{"source":"./local-existing"}]}\n');
+    const id = await stage(store);
+    await installPackages(store, await previewInstallation(store, id), true, fake());
+    const plan = await previewActivation(store, id, { resources: { 'packages:npm:synthetic-one': 'overwrite' } });
+    assert.equal(plan.items.find(item => item.id === 'packages:npm:synthetic-one')?.action, 'write');
+    await activateImport(store, plan, true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.deepEqual(settings.packages.map((entry: { source: string }) => entry.source), [
+      `./${base(id)}/package-store/npm/node_modules/synthetic-1`,
+      './local-existing',
+      `./${base(id)}/package-store/npm/node_modules/synthetic-2`,
+    ]);
+  });
+});
+
+test('skip decision marks the item skipped and writes nothing for it', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'settings.json'), '{"packages":[{"source":"npm:synthetic-one@2.0.0"}]}\n');
+    const id = await stage(store);
+    await installPackages(store, await previewInstallation(store, id), true, fake());
+    const plan = await previewActivation(store, id, { resources: {
+      'packages:npm:synthetic-one': 'skip',
+      'packages:git:https://example.com/team/synthetic': 'skip',
+    } });
+    assert.deepEqual(plan.items.map(item => item.action), ['skip', 'skip']);
+    await activateImport(store, plan, true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.deepEqual(settings.packages, [{ source: 'npm:synthetic-one@2.0.0' }]);
+  });
+});
+
+test('a failed installation identifies the failing package source', async () => {
+  await fixture(async (root, store) => {
+    const id = await stage(store);
+    const factory: PackageInstallerFactory = async directory => {
+      const installer = await fake()(directory);
+      let count = 0;
+      return { ...installer, async install(source) {
+        if (++count === 2) throw new Error('synthetic private command output');
+        await installer.install(source);
+      } };
+    };
+    await assert.rejects(installPackages(store, await previewInstallation(store, id), true, factory), (error: unknown) => {
+      assert.ok(error instanceof StorageError);
+      assert.equal(error.code, 'installation-abandoned');
+      assert.equal(error.source, profile.packages[1]!.source);
+      assert.equal(String(error).includes('synthetic private command output'), false);
+      return true;
+    });
+  });
+});
+
+test('restore leaves external script effects declared and untouched', async () => {
+  await fixture(async (root, store) => {
+    const id = await stage(store);
+    const factory: PackageInstallerFactory = async directory => {
+      const installer = await fake()(directory);
+      await writeFile(join(root, 'script-effect.txt'), 'synthetic external effect');
+      return installer;
+    };
+    await installPackages(store, await previewInstallation(store, id), true, factory);
+    const manifest = JSON.parse(await readFile(join(root, base(id), 'manifest.json'), 'utf8'));
+    assert.deepEqual(manifest.externalEffects, ['script-effect.txt']);
+    assert.deepEqual((await inspectImport(store, id)).externalEffects, ['script-effect.txt']);
+    await activateImport(store, await previewActivation(store, id), true);
+    await restoreImport(store, id, true);
+    assert.equal(await readFile(join(root, 'script-effect.txt'), 'utf8'), 'synthetic external effect');
   });
 });

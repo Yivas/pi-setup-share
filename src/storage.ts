@@ -6,10 +6,13 @@ import { dirname, isAbsolute, join } from 'node:path';
 export type StorageErrorCode = 'unavailable' | 'unsafe-path' | 'changed' | 'limit-exceeded' | 'busy' | 'invalid-state' | 'recovery-required' | 'consent-required' | 'aborted' | 'installation-abandoned';
 export class StorageError extends Error {
   readonly code: StorageErrorCode;
-  constructor(code: StorageErrorCode) {
+  // Optional item identity for failures that concern one package or reference, never a value or path.
+  readonly source: string | undefined;
+  constructor(code: StorageErrorCode, source?: string) {
     super(code);
     this.name = 'StorageError';
     this.code = code;
+    this.source = source;
   }
 }
 

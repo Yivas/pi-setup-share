@@ -204,9 +204,10 @@ async function continueImport(ctx: ExtensionCommandContext, store: FileStore, im
   const resources: Record<string, string> = {};
   for (const item of activation.items.filter(item => item.status === 'conflict')) {
     await review(ctx, [safeDisplay(item.id)]);
-    const choice = await ctx.ui.select(en.conflicts, [en.preserve, en.overwrite, en.later]);
+    const choice = await ctx.ui.select(en.conflicts, [en.preserve, en.overwrite, en.skip, en.later]);
     if (!choice || choice === en.later) { ctx.ui.notify(en.deferred, 'info'); return; }
-    (item.id.startsWith('resources.') || item.id === 'packages' ? resources : configuration)[item.id] = choice === en.overwrite ? 'overwrite' : 'preserve';
+    (item.id.startsWith('resources.') || item.id.startsWith('packages:') ? resources : configuration)[item.id] =
+      choice === en.overwrite ? 'overwrite' : choice === en.skip ? 'skip' : 'preserve';
   }
   activation = await previewActivation(store, importId, { configuration, resources });
   await review(ctx, activation.items.map(item => `${item.id}: ${item.status} / ${item.action}`));
@@ -217,6 +218,17 @@ async function continueImport(ctx: ExtensionCommandContext, store: FileStore, im
 
 export async function runSetupShare(ctx: ExtensionCommandContext, agentDir: string, installer: PackageInstallerFactory, homeDir = homedir()): Promise<void> {
   if (ctx.mode !== 'tui' || !ctx.hasUI) return;
+  try {
+    await runSetupShareFlow(ctx, agentDir, installer, homeDir);
+  } catch (error) {
+    // Boundary: validation and storage failures notify the receiver instead of rejecting the command.
+    if (error instanceof ProfileError) { ctx.ui.notify(en.invalidProfile, 'warning'); return; }
+    if (error instanceof StorageError) { ctx.ui.notify(en.errors[error.code] ?? en.unknownError, 'warning'); return; }
+    throw error;
+  }
+}
+
+async function runSetupShareFlow(ctx: ExtensionCommandContext, agentDir: string, installer: PackageInstallerFactory, homeDir: string): Promise<void> {
   const action = await ctx.ui.select(en.menu, [en.export, en.inspect, en.import, en.resume, en.restore, en.recover]);
   if (!action) return;
   if (action === en.inspect || action === en.import) {
