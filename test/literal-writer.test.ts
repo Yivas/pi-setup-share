@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { link, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -30,6 +30,22 @@ test('writes a synthetic tree that the literal reader verifies without extractio
     assert.deepEqual(await previewLiteralArchive(output), { sourcePlatform: process.platform, files: 2, directories: 2, symlinks: 0, totalBytes });
     const leftovers = (await readdir(join(output, '..'))).filter(name => name.includes('.tmp'));
     assert.deepEqual(leftovers, []);
+  });
+});
+
+test('refuses to publish a verified temporary that changes before the link', async () => {
+  await fixture(async (root, output) => {
+    await syntheticTree(root);
+    await assert.rejects(writeLiteralArchive(root, output, {
+      onVerified: async temporary => {
+        // Same inode, same bytes and same size: only the modification time moves, so this case is caught
+        // by the timestamp check and not by the identity or size checks.
+        const stats = await lstat(temporary);
+        await utimes(temporary, stats.atime, new Date(stats.mtimeMs + 1000));
+      },
+    }), { code: 'invalid-state' });
+    assert.equal(await lstat(output).then(() => true, () => false), false);
+    assert.deepEqual((await readdir(join(output, '..'))).filter(name => name.includes('.tmp')), []);
   });
 });
 

@@ -19,7 +19,13 @@ import { previewTreeArchive } from './literal-archive.ts';
 import { LITERAL_ARCHIVE_SPEC, LITERAL_MANIFEST_LIMITS, type LiteralEntry, type LiteralManifest, type TreeArchiveSpec } from './literal-manifest.ts';
 import { StorageError } from './storage.ts';
 
-export type LiteralWriterOptions = Readonly<{ signal?: AbortSignal; maxTotalBytes?: number }>;
+export type LiteralWriterOptions = Readonly<{
+  signal?: AbortSignal;
+  maxTotalBytes?: number;
+  // Verification seam: called with the temporary path once its contents and identity have been checked and
+  // before it is published. It exists so the negative tests can alter the temporary at the worst moment.
+  onVerified?: (temporary: string) => void | Promise<void>;
+}>;
 export type LiteralWriterResult = Readonly<{ files: number; directories: number; symlinks: number; totalBytes: number }>;
 
 type LiteralFileSource = Readonly<{
@@ -220,9 +226,18 @@ export async function writeTreeArchive(root: string, destination: string, spec: 
     const verified = await lstat(temporary);
     if (!verified.isFile() || verified.dev !== publishedIdentity.dev || verified.ino !== publishedIdentity.ino
         || verified.size !== publishedIdentity.size) invalid();
+    await options.onVerified?.(temporary);
+    checkAbort(options.signal);
     await link(temporary, destination);
     const published = await lstat(destination);
-    if (!published.isFile() || published.dev !== verified.dev || published.ino !== verified.ino || published.size !== verified.size) invalid();
+    // The link shares the inode, so the identity proves the published file is the verified one; bytes
+    // written after that verification would move the modification time and are refused here. A refused
+    // publication removes the link only while it is still our own inode, so nothing of ours survives.
+    if (!published.isFile() || published.dev !== verified.dev || published.ino !== verified.ino
+        || published.size !== verified.size || published.mtimeMs !== verified.mtimeMs) {
+      if (published.dev === verified.dev && published.ino === verified.ino) await unlink(destination).catch(() => undefined);
+      invalid();
+    }
   } catch (error) {
     if (error instanceof StorageError) throw error;
     if ((error as NodeJS.ErrnoException)?.name === 'AbortError') throw new StorageError('aborted');
