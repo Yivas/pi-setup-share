@@ -341,3 +341,14 @@ test('a receipt that cannot be written never contradicts the journal', async () 
     assert.deepEqual((await readdir(dirname(plan.journalPath))).filter(name => name.includes('.tmp')), []);
   });
 });
+
+test('a completed swap cannot run again over the same plan', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await runSwap(plan);
+    const installed = await readFile(join(agentDir, 'settings.json'), 'utf8');
+    await assert.rejects(runSwap(plan), StorageError);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), installed);
+    assert.equal((await readSwapJournal(plan.journalPath)).state, 'success');
+  });
+});
