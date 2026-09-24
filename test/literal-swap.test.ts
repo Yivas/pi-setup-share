@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -245,5 +245,52 @@ test('preflight reports unreadable trees and insufficient space', async () => {
     assert.equal(tight.ok, false);
     assert.deepEqual(tight.reasons, ['insufficient-space']);
     assert.equal(tight.requiredBytes > 10 * 1024 ** 4, true);
+  });
+});
+
+// POSIX permission fixtures: chmod does not deny writes on Windows, and a root container ignores mode.
+const posixPermissions = process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0);
+const posixSkip = posixPermissions ? 'mode bits do not deny access here' : false;
+
+test('a destination that cannot be written aborts before touching any tree', { skip: posixSkip }, async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    await chmod(workspace, 0o500);
+    try {
+      await assert.rejects(runSwap(plan), StorageError);
+      const journal = await readSwapJournal(plan.journalPath);
+      assert.notEqual(journal.state, 'success');
+      assert.equal(await lstat(plan.journal.rescue).then(() => true, () => false), false);
+      assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+      assert.equal(await readFile(join(staging, 'settings.json'), 'utf8'), '{"synthetic":"replacement"}\n');
+    } finally {
+      await chmod(workspace, 0o700);
+    }
+  });
+});
+
+test('preflight reports a staging tree it cannot read', { skip: posixSkip }, async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    await chmod(staging, 0o000);
+    try {
+      const report = await preflightSwap(agentDir, staging);
+      assert.equal(report.ok, false);
+      assert.equal(report.reasons.includes('unreadable-staging'), true);
+    } finally {
+      await chmod(staging, 0o700);
+    }
+  });
+});
+
+test('preflight reports an unreadable root as well', { skip: posixSkip }, async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    await chmod(agentDir, 0o000);
+    try {
+      const report = await preflightSwap(agentDir, staging);
+      assert.equal(report.ok, false);
+      assert.equal(report.reasons.includes('unreadable-root'), true);
+    } finally {
+      await chmod(agentDir, 0o700);
+    }
   });
 });
