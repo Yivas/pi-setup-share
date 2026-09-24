@@ -164,7 +164,7 @@ test('a temporary replaced before publication is refused and nothing foreign is 
   });
 });
 
-test('refuses an existing staging destination and removes a partial one after cancellation', async () => {
+test('refuses an existing staging destination and leaves a partial tree after cancellation', async () => {
   await fixture(async (root, output) => {
     await syntheticTree(root);
     await writeLiteralArchive(root, output);
@@ -175,6 +175,11 @@ test('refuses an existing staging destination and removes a partial one after ca
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(materializeLiteralArchive(output, aborted, { signal: controller.signal }), { code: 'aborted' });
+    // Nothing is deleted, not even after a plain cancellation: deleting by path cannot be proven to target
+    // this call's own directory, so the partial tree and its ownership token stay for the caller to report.
     assert.equal(await lstat(aborted).then(() => true, () => false), false);
+    const leftovers = (await readdir(join(output, '..'))).filter(name => name.startsWith('.aborted.'));
+    assert.equal(leftovers.filter(name => name.endsWith('.tmp')).length, 1);
+    assert.deepEqual(leftovers.filter(name => name.endsWith('.tmp.owner')).length, 1);
   });
 });

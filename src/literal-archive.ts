@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, mkdir, open, readFile, rename, rm, symlink, unlink, type FileHandle } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, symlink, unlink, type FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { crc32 } from 'node:zlib';
@@ -295,13 +295,13 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
 
 // Second pass: materializes a verified archive into a directory that must not exist yet.
 //
-// Directory-descriptor operations are not available in Node, so the tree is built under a name created
-// exclusively with 128 random bits, an ownership token is written next to it, and both identities plus the
-// token content are re-verified before anything is published or removed. Nothing is ever deleted without
-// that proof: a failure that loses it is reported as `recovery-required` and the paths are left for review.
-// The remaining window is documented in the reliability notes: a process that learns the random name from
-// the parent listing and swaps the temporary between `mkdir` and the token write can make this call write
-// into its directory; publishing and deleting require the proof, so at worst that directory stays there.
+// Verification and the protected operation are separate path-based steps, and Node exposes no
+// directory-descriptor operations (`open` on a directory fails with `EISDIR`), so nothing here deletes:
+// after verifying the tree, a concurrent process could still swap the temporary before a call by path, and
+// removing by path could destroy a directory this call does not own. The temporary and its ownership token
+// are left where they are on any failure, and the caller reports the ambiguous state so a human or the
+// auxiliary decides. Publication moves the tree instead of destroying anything, so the worst case is a
+// misplaced or leftover directory inside the managed area, never lost data.
 export async function materializeTreeArchive(path: string, destination: string, spec: TreeArchiveSpec,
   options: LiteralMaterializeOptions = {}): Promise<LiteralPreview> {
   if (typeof destination !== 'string' || !isAbsolute(destination)) throw new StorageError('unsafe-path');
@@ -350,36 +350,21 @@ export async function materializeTreeArchive(path: string, destination: string, 
       };
     },
   };
-  try {
-    const preview = await walkTreeArchive(path, spec, options, visitor);
-    // The tree is complete: refuse to publish unless both identities and the token content still match.
-    if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
-    await options.onStaged?.(temporary);
-    // Verified again after the seam: the only operations that touch something other than this call's own
-    // temporary are the publication and the cleanup, and both require this proof.
-    if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
-    if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
-    await unlink(tokenPath).catch(() => undefined);
-    await rename(temporary, destination);
-    const published = await lstat(destination).catch(() => undefined);
-    if (!published?.isDirectory() || published.dev !== owner.directory.dev || published.ino !== owner.directory.ino) {
-      throw new StorageError('recovery-required');
-    }
-    return preview;
-  } catch (error) {
-    if (error instanceof StorageError && error.code === 'recovery-required') throw error;
-    await removeOwnTemporary(temporary, tokenPath, owner);
-    throw error;
-  }
-}
-
-// Removes the temporary tree and its token only while both are provably the ones this call created.
-async function removeOwnTemporary(temporary: string, tokenPath: string, owner: MaterializedOwner | undefined): Promise<void> {
-  if (owner && !await verifiedTemporary(temporary, tokenPath, owner)) {
+  const preview = await walkTreeArchive(path, spec, options, visitor);
+  // The tree is complete: refuse to publish unless both identities and the token content still match.
+  if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
+  await options.onStaged?.(temporary);
+  // Verified again after the seam, because the publication is the only step that touches something other
+  // than this call's own temporary.
+  if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
+  if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
+  await unlink(tokenPath).catch(() => undefined);
+  await rename(temporary, destination);
+  const published = await lstat(destination).catch(() => undefined);
+  if (!published?.isDirectory() || published.dev !== owner.directory.dev || published.ino !== owner.directory.ino) {
     throw new StorageError('recovery-required');
   }
-  await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
-  await unlink(tokenPath).catch(() => undefined);
+  return preview;
 }
 
 async function verifiedTemporary(temporary: string, tokenPath: string, owner: MaterializedOwner): Promise<boolean> {
