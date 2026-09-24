@@ -229,7 +229,12 @@ async function continueImport(ctx: ExtensionCommandContext, store: FileStore, im
   activation = await previewActivation(store, importId, { configuration, resources });
   await review(ctx, activation.items.map(item => `${item.id}: ${item.status} / ${item.action}`));
   if (!await confirmStep(ctx, en.activateTitle, en.activateWarning)) { ctx.ui.notify(en.deferred, 'info'); return; }
-  await runOperation(ctx, en.working, signal => activateImport(store, activation, true, signal));
+  const activating = new ProgressTracker(en.activating);
+  activating.setTotal(activation.writes);
+  await runOperation(ctx, en.working, signal => activateImport(store, activation, true, signal, (index, total) => {
+    activating.begin(en.progressItem(index, total));
+    activating.finish('completed');
+  }), activating);
   ctx.ui.notify(en.active, 'info');
 }
 
@@ -269,7 +274,14 @@ async function runSetupShareFlow(ctx: ExtensionCommandContext, agentDir: string,
     const store = await FileStore.open(agentDir);
     const staging = await previewImport(store, profile);
     if (!await confirmStep(ctx, en.stageTitle, en.stageWarning)) { ctx.ui.notify(en.noChanges, 'info'); return; }
-    await runOperation(ctx, en.working, signal => applyImport(store, staging, true, signal));
+    // The total is the number of store writes this staging will perform, so the bar is determinate only
+    // while that count is real; the label carries counts, never paths or file contents.
+    const staging_ = new ProgressTracker(en.working);
+    staging_.setTotal(staging.writes);
+    await runOperation(ctx, en.working, signal => applyImport(store, staging, true, signal, (index, total) => {
+      staging_.begin(en.progressItem(index, total));
+      staging_.finish('completed');
+    }), staging_);
     ctx.ui.notify(en.staged, 'info');
     await continueImport(ctx, store, staging.importId, installer);
     return;

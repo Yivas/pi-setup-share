@@ -152,7 +152,7 @@ async function undo(store: FileStore, journal: Journal, partial: boolean): Promi
 
 function abort(signal?: AbortSignal): void { if (signal?.aborted) throw new StorageError('aborted'); }
 
-export async function commitChanges(store: FileStore, changes: readonly FileChange[], consent: boolean, signal?: AbortSignal, transactionId = randomUUID()): Promise<string | null> {
+export async function commitChanges(store: FileStore, changes: readonly FileChange[], consent: boolean, signal?: AbortSignal, transactionId = randomUUID(), onWrite?: (index: number, total: number) => void): Promise<string | null> {
   if (consent !== true) throw new StorageError('consent-required');
   abort(signal);
   journalPath(transactionId);
@@ -183,6 +183,9 @@ export async function commitChanges(store: FileStore, changes: readonly FileChan
         abort(signal);
         const change = effective[index] as FileChange;
         await store.write(change.path, change.bytes, change.before);
+        // Reported once the write is durable in the store, so the caller's progress never counts a file that
+        // has not been written yet. Only counts travel: the caller decides what label to show.
+        onWrite?.(index + 1, effective.length);
         journal.appliedCount = index + 1;
         journalState = await save(store, journal, journalState);
       }

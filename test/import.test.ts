@@ -52,6 +52,26 @@ test('staging preview is read-only and stores no content or snapshots in its pub
   });
 });
 
+test('staging and activation report a real write count and never a path', async () => {
+  await fixture(async (root, store) => {
+    await native(root);
+    const plan = await previewImport(store, profile);
+    const staged: [number, number][] = [];
+    await applyImport(store, plan, true, undefined, (index, total) => staged.push([index, total]));
+    // Only counts travel, and they arrive once per write with the same real total.
+    assert.equal(plan.writes, staged.length);
+    assert.deepEqual(staged.map(([index]) => index), staged.map((_entry, position) => position + 1));
+    assert.deepEqual([...new Set(staged.map(([, total]) => total))], [plan.writes]);
+
+    const activation = await previewActivation(store, plan.importId);
+    const written: [number, number][] = [];
+    await activateImport(store, activation, true, undefined, (index, total) => written.push([index, total]));
+    assert.equal(activation.writes, written.length);
+    assert.deepEqual(written.map(([index]) => index), written.map((_entry, position) => position + 1));
+    assert.deepEqual([...new Set(written.map(([, total]) => total))], [activation.writes]);
+  });
+});
+
 test('staging copies explicit resources without modifying global configuration or executing them', async () => {
   await fixture(async (root, store) => {
     await native(root);

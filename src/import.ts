@@ -30,12 +30,15 @@ export interface StagingPlan {
   readonly resources: number;
   readonly entrypoints: number;
   readonly packages: number;
+  // Number of store writes this plan will perform, so the caller can show a real total.
+  readonly writes: number;
 }
 export interface ActivationPlan {
   readonly kind: 'activation';
   readonly importId: string;
   readonly items: readonly Readonly<PreviewItem>[];
   readonly deferredPackages: number;
+  readonly writes: number;
 }
 export interface InstallationPlan {
   readonly kind: 'installation';
@@ -183,12 +186,13 @@ export async function previewImport(store: FileStore, value: unknown): Promise<S
     changes.push({ ...file, before });
   }
   const plan: StagingPlan = Object.freeze({ kind: 'staging', importId, resources: profile.resources.length,
-    entrypoints: Object.values(profile.entrypoints ?? {}).reduce((count, paths) => count + paths.length, 0), packages: profile.packages?.length ?? 0 });
+    entrypoints: Object.values(profile.entrypoints ?? {}).reduce((count, paths) => count + paths.length, 0), packages: profile.packages?.length ?? 0,
+    writes: changes.length });
   stagingPlans.set(plan, { store, changes, transactionId: importId, profileText, guards: [] });
   return plan;
 }
 
-async function executePlan(store: FileStore, plan: StagingPlan | ActivationPlan, plans: WeakMap<object, PreparedPlan>, consent: boolean, signal?: AbortSignal): Promise<void> {
+async function executePlan(store: FileStore, plan: StagingPlan | ActivationPlan, plans: WeakMap<object, PreparedPlan>, consent: boolean, signal?: AbortSignal, onWrite?: (index: number, total: number) => void): Promise<void> {
   checkConsent(consent, signal);
   const prepared = plans.get(plan);
   if (!prepared || prepared.store !== store) throw new StorageError('invalid-state');
@@ -200,11 +204,11 @@ async function executePlan(store: FileStore, plan: StagingPlan | ActivationPlan,
     await verifyAgentFiles(store, profile, plan.importId);
     for (const source of prepared.packageSources ?? []) await verifyPackageDirectory(store, plan.importId, source);
   }
-  const id = await commitChanges(store, prepared.changes, true, signal, prepared.transactionId);
+  const id = await commitChanges(store, prepared.changes, true, signal, prepared.transactionId, onWrite);
   if (id !== prepared.transactionId) throw new StorageError('invalid-state');
 }
-export async function applyImport(store: FileStore, plan: StagingPlan, consent: boolean, signal?: AbortSignal): Promise<ImportResult> {
-  await executePlan(store, plan, stagingPlans, consent, signal);
+export async function applyImport(store: FileStore, plan: StagingPlan, consent: boolean, signal?: AbortSignal, onWrite?: (index: number, total: number) => void): Promise<ImportResult> {
+  await executePlan(store, plan, stagingPlans, consent, signal, onWrite);
   return { importId: plan.importId, state: 'staged' };
 }
 
@@ -452,12 +456,13 @@ export async function previewActivation(store: FileStore, importId: string, deci
   const transactionId = randomUUID();
   const active: ImportManifest = { ...manifest, state: 'active', activationTransactionId: transactionId };
   changes.push({ path: `${basePath(importId)}/manifest.json`, bytes: jsonBytes(active, manifestLimit), before: manifestSnapshot });
-  const plan: ActivationPlan = Object.freeze({ kind: 'activation', importId, items: Object.freeze(items.map(item => Object.freeze(item))), deferredPackages: manifest.installationReceipt ? 0 : profile.packages?.length ?? 0 });
+  const plan: ActivationPlan = Object.freeze({ kind: 'activation', importId, items: Object.freeze(items.map(item => Object.freeze(item))), deferredPackages: manifest.installationReceipt ? 0 : profile.packages?.length ?? 0,
+    writes: changes.length });
   activationPlans.set(plan, { store, changes, transactionId, profileText: profileSnapshot.bytes?.toString('utf8') as string, guards, packageSources });
   return plan;
 }
-export async function activateImport(store: FileStore, plan: ActivationPlan, consent: boolean, signal?: AbortSignal): Promise<ImportResult> {
-  await executePlan(store, plan, activationPlans, consent, signal);
+export async function activateImport(store: FileStore, plan: ActivationPlan, consent: boolean, signal?: AbortSignal, onWrite?: (index: number, total: number) => void): Promise<ImportResult> {
+  await executePlan(store, plan, activationPlans, consent, signal, onWrite);
   return { importId: plan.importId, state: 'active' };
 }
 export interface ImportStatusSummary {

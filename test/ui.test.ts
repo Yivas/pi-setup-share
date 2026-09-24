@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, lstat, readFile, rm, writeFile } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,10 +10,10 @@ import { inspectImport, listImports, type PackageInstallerFactory } from '../src
 import { en } from '../src/locales/en.ts';
 import { readProfileFile, writeProfileFile } from '../src/profile-file.ts';
 import { FileStore } from '../src/storage.ts';
-import { runSetupShare } from '../src/ui.ts';
+import { errorMessage, runSetupShare } from '../src/ui.ts';
 
 type Choice = boolean | { count: number; include: number[] };
-function context(menu: (string | ((options: string[]) => string))[], inputs: string[], choices: Choice[], confirms: boolean[] = [], viewport: { width: number; rows: number } = { width: 80, rows: 24 }) {
+function context(menu: (string | ((options: string[]) => string))[], inputs: string[], choices: Choice[], confirms: boolean[] = [], viewport: { width: number; rows: number } = { width: 80, rows: 24 }, onScreen?: (rendered: string) => void) {
   const notifications: string[] = [];
   const screens: string[] = [];
   const menus: string[][] = [];
@@ -27,6 +28,9 @@ function context(menu: (string | ((options: string[]) => string))[], inputs: str
       const component = factory(tui, theme, {}, resolve);
       const rendered = component.render(viewport.width).join('\n');
       screens.push(rendered);
+      // Hook used by the changing-inventory fixture: the screen is on display and the test can change the
+      // filesystem before the flow reads anything, which is exactly the window under test.
+      onScreen?.(rendered);
       if (rendered.startsWith(en.review)) {
         let page = rendered;
         for (let guard = 0; guard < 100 && page.includes(`  ${en.next}`); guard++) {
@@ -213,6 +217,30 @@ test('export selects discovered global files without reading unselected secrets'
   });
 });
 
+test('a resource that disappears after discovery fails the export instead of being omitted', async () => {
+  await fixture(async (root, agent) => {
+    await mkdir(join(agent, 'extensions'));
+    await writeFile(join(agent, 'extensions', 'sample.ts'), 'synthetic-extension');
+    const output = join(root, 'resources.zip');
+    let removed = false;
+    const ui = context([en.export], [output], [
+      { count: 5, include: [] }, { count: 1, include: [0] },
+    ], [true, true, true, true, false], undefined, rendered => {
+      // The discovered list is on screen, so the file still exists when it was listed and is gone when the
+      // export tries to read it: the flow must fail instead of exporting a shorter list.
+      if (!removed && rendered.includes('sample.ts')) { rmSync(join(agent, 'extensions', 'sample.ts')); removed = true; }
+    });
+    await assert.rejects(runSetupShare(ui.ctx, agent, noInstall, root), (error: unknown) => {
+      // The message a person sees is the mapped one, and the error never carries the local path.
+      assert.equal(errorMessage(error), en.errors.unavailable);
+      assert.equal(JSON.stringify(error).includes(agent), false);
+      return true;
+    });
+    assert.equal(removed, true);
+    assert.equal(await lstat(output).then(() => true, () => false), false);
+  });
+});
+
 test('moves a synthetic sender setup to another agent directory with separate install, activation and restore', async () => {
   await fixture(async (root, sender) => {
     const receiver = join(root, 'receiver');
@@ -259,6 +287,11 @@ test('moves a synthetic sender setup to another agent directory with separate in
     assert.equal(exported.screens.join('').includes('SYNTHETIC_SECRET_SENTINEL'), false);
     assert.equal(exported.screens.join('').includes('private\\server.js'), false);
     assert.equal(exported.screens.join('').includes('.npmrc'), false);
+    // The progress screens of the writing phases carry counts and phases, never a path or a value.
+    for (const screen of exported.screens.filter(line => line.includes(en.working) || line.includes(en.activating))) {
+      assert.equal(screen.includes(sender), false);
+      assert.equal(screen.includes(sender.replace(/\\/g, '/')), false);
+    }
     assert.deepEqual(transferred.resources.map(resource => `${resource.kind}/${resource.path}`), [
       'extension/sample.ts', 'skill/craft/SKILL.md', 'skill/craft/support.ts',
       'prompt/hello.md', 'theme/blue.json', 'agent/helper.md', 'agent/support.ts',
