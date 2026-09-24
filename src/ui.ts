@@ -232,6 +232,7 @@ async function continueImport(ctx: ExtensionCommandContext, store: FileStore, im
   const activating = new ProgressTracker(en.activating);
   activating.setTotal(activation.writes);
   await runOperation(ctx, en.working, signal => activateImport(store, activation, true, signal, (index, total) => {
+    activating.setTotal(total);
     activating.begin(en.progressItem(index, total));
     activating.finish('completed');
   }), activating);
@@ -279,6 +280,9 @@ async function runSetupShareFlow(ctx: ExtensionCommandContext, agentDir: string,
     const staging_ = new ProgressTracker(en.working);
     staging_.setTotal(staging.writes);
     await runOperation(ctx, en.working, signal => applyImport(store, staging, true, signal, (index, total) => {
+      // The declared count can exceed the writes actually needed, because unchanged files are skipped. The
+      // real count replaces it, so the bar never claims completion before the last write is durable.
+      staging_.setTotal(total);
       staging_.begin(en.progressItem(index, total));
       staging_.finish('completed');
     }), staging_);
