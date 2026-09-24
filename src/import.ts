@@ -397,7 +397,10 @@ function addReferences(profile: ResourceProfile, importId: string, settings: Rec
     settings.packages = current;
   }
   for (const [kind, setting] of [['extension', 'extensions'], ['skill', 'skills'], ['prompt', 'prompts'], ['theme', 'themes']] as const) {
-    append(setting, (profile.entrypoints?.[kind] ?? []).map(path => `${base}/resources/${kind}/${path}`), `resources.${kind}`);
+    // One item per selected reference: a conflict on one resource never decides the fate of another.
+    for (const path of profile.entrypoints?.[kind] ?? []) {
+      append(setting, [`${base}/resources/${kind}/${path}`], `resources.${kind}:${path}`);
+    }
   }
   if (agentDirectories(profile).length) append('packages', [{ source: `${base}/agents-package`, extensions: [], skills: [], prompts: [], themes: [] }], 'resources.agent');
   (profile.packages ?? []).forEach((package_, index) => {

@@ -152,8 +152,8 @@ test('invalid resource-list shape requires explicit overwrite rather than silent
     const stage = await previewImport(store, profile);
     await applyImport(store, stage, true);
     const preserve = await previewActivation(store, stage.importId);
-    assert.deepEqual(preserve.items.find(item => item.id === 'resources.extension'), { id: 'resources.extension', status: 'conflict', action: 'preserve' });
-    const overwrite = await previewActivation(store, stage.importId, { resources: { 'resources.extension': 'overwrite' } });
+    assert.deepEqual(preserve.items.find(item => item.id === 'resources.extension:main.ts'), { id: 'resources.extension:main.ts', status: 'conflict', action: 'preserve' });
+    const overwrite = await previewActivation(store, stage.importId, { resources: { 'resources.extension:main.ts': 'overwrite' } });
     await activateImport(store, overwrite, true);
     assert.deepEqual(JSON.parse(await readFile(join(root, 'settings.json'), 'utf8')).extensions, [`./${base(stage.importId)}/resources/extension/main.ts`]);
   });
@@ -258,6 +258,26 @@ test('agent Markdown added on disk after staging or preview is not implicitly ac
       assert.equal((await store.read('settings.json')).bytes, null);
     });
   }
+});
+
+test('resource references are decided one by one', async () => {
+  await fixture(async (root, store) => {
+    await writeFile(join(root, 'settings.json'), '{"extensions":false}\n');
+    const stage = await previewImport(store, { ...empty, resources: [
+      { kind: 'extension', path: 'main.ts', encoding: 'utf8', content: 'synthetic main' },
+      { kind: 'extension', path: 'support.ts', encoding: 'utf8', content: 'synthetic support' },
+    ], entrypoints: { extension: ['main.ts', 'support.ts'] } });
+    await applyImport(store, stage, true);
+    const plan = await previewActivation(store, stage.importId, { resources: { 'resources.extension:main.ts': 'overwrite' } });
+    assert.deepEqual(plan.items, [
+      { id: 'resources.extension:main.ts', status: 'conflict', action: 'write' },
+      { id: 'resources.extension:support.ts', status: 'conflict', action: 'preserve' },
+    ]);
+    await activateImport(store, plan, true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.equal(settings.extensions.length, 1);
+    assert.equal(String(settings.extensions[0]).endsWith('/main.ts'), true);
+  });
 });
 
 test('restoring an active import removes staged files and restores original configuration bytes', async () => {
