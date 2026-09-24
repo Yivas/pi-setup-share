@@ -358,12 +358,20 @@ export async function materializeTreeArchive(path: string, destination: string, 
   // than this call's own temporary.
   if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
   if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
-  await unlink(tokenPath).catch(() => undefined);
-  await rename(temporary, destination);
+  try {
+    await rename(temporary, destination);
+  } catch {
+    // The tree keeps its ownership token, so the state stays identifiable and recoverable instead of
+    // losing the only proof of what this call created.
+    throw new StorageError('recovery-required');
+  }
   const published = await lstat(destination).catch(() => undefined);
   if (!published?.isDirectory() || published.dev !== owner.directory.dev || published.ino !== owner.directory.ino) {
     throw new StorageError('recovery-required');
   }
+  // Publication confirmed, so the token is no longer needed and is removed afterwards. A failure here only
+  // leaves that small file behind, never a tree without its proof.
+  await unlink(tokenPath).catch(() => undefined);
   return preview;
 }
 
