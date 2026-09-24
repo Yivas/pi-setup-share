@@ -47,7 +47,7 @@ export const en = {
   addManualTitle: 'Add files from another root manually?',
   omittedResources: 'Resource candidates not offered',
   inventoryTruncated: 'Inventory limit reached. Some files were not examined. You can add known files manually.',
-  duplicateResource: 'Choose which source to include for this resource path',
+  duplicateResource: 'Choose which source to include for this resource path', skipCollision: 'Include neither source',
   resourceRoot: 'Resource root — absolute path', resourceKind: 'Resource type',
   resourcePath: 'Relative resource path — one file', resourceEntry: 'Register this file as an entrypoint on activation?',
   resourceEntryWarning: 'Support files should remain unregistered. Agent discovery must not include unselected Markdown files.',

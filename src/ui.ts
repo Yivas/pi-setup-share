@@ -96,14 +96,21 @@ async function exportSetup(ctx: ExtensionCommandContext, store: FileStore, agent
       }
       addOmission('resourceFiles', 'excluded', inventory.omitted);
       const unique = new Map<string, typeof selected[number]>();
+      const omittedCollisions = new Set<string>();
       for (const item of selected) {
         const key = `${item.candidate.kind}/${item.candidate.path}`.toLowerCase().toUpperCase().normalize('NFC');
+        if (omittedCollisions.has(key)) { addOmission(item.candidate.kind, 'collision', 1); continue; }
         const prior = unique.get(key);
         if (prior) {
           addOmission(item.candidate.kind, 'collision', 1);
-          const origin = await ctx.ui.select(en.duplicateResource, [prior.origin, item.origin]);
+          const origin = await ctx.ui.select(en.duplicateResource, [prior.origin, item.origin, en.skipCollision]);
           if (!origin) return;
-          if (origin === item.origin) unique.set(key, item);
+          if (origin === en.skipCollision) {
+            // Include neither source: both candidates are omitted and nothing replaces them.
+            omittedCollisions.add(key);
+            addOmission(item.candidate.kind, 'unselected', 2);
+            unique.delete(key);
+          } else if (origin === item.origin) unique.set(key, item);
         } else unique.set(key, item);
       }
       const chosen = [...unique.values()];
@@ -153,6 +160,10 @@ async function exportSetup(ctx: ExtensionCommandContext, store: FileStore, agent
   const partial = truncatedResources ? resourceKinds : [];
   const scanned = [...categories as TransferCategory[], ...(scannedResources && !truncatedResources ? resourceKinds : [])];
   const notExamined = TRANSFER_CATEGORIES.filter(category => !scanned.includes(category) && !partial.includes(category));
+  // Every receiver action is always listed: the sender cannot prove that installing tools, verifying
+  // endpoints or checking the platform is unnecessary for a given profile, and under-informing is worse.
+  // The `limit` reason stays unused on purpose: truncation has no countable remainder, and `partial`
+  // plus the explicit review line already report it without inventing a count.
   profile = validateProfile({ ...profile, version: 2, transfer: {
     scanned, partial, notExamined, omissions: [...omissions.values()], actions: [...RECEIVER_ACTIONS],
   } });

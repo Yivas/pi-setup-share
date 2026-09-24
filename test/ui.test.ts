@@ -344,7 +344,24 @@ test('duplicate global resource paths require an explicit source choice', async 
     ], [true, true, true, false]);
     await runSetupShare(ui.ctx, agent, noInstall, root);
     assert.deepEqual((await readProfileFile(output)).resources.map(resource => resource.content), ['from user']);
-    assert.deepEqual(ui.menus.at(-1), ['Pi skills', 'User skills']);
+    assert.deepEqual(ui.menus.at(-1), ['Pi skills', 'User skills', en.skipCollision]);
+  });
+});
+
+test('colliding resource paths can be omitted from the export entirely', async () => {
+  await fixture(async (root, agent) => {
+    await mkdir(join(agent, 'skills', 'craft'), { recursive: true });
+    await mkdir(join(root, '.agents', 'skills', 'craft'), { recursive: true });
+    await writeFile(join(agent, 'skills', 'craft', 'SKILL.md'), 'from Pi');
+    await writeFile(join(root, '.agents', 'skills', 'craft', 'SKILL.md'), 'from user');
+    const output = join(root, 'skip-collision.zip');
+    const ui = context([en.export, () => en.skipCollision], [output], [
+      { count: 5, include: [] }, { count: 2, include: [0, 1] }, true,
+    ], [true, true, false]);
+    await runSetupShare(ui.ctx, agent, noInstall, root);
+    const exported = await readProfileFile(output);
+    assert.deepEqual(exported.resources, []);
+    assert.ok(exported.transfer?.omissions.some(item => item.category === 'skill' && item.reason === 'unselected' && item.count === 2));
   });
 });
 
