@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, mkdir, open, rename, rm, symlink, type FileHandle } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, rm, symlink, unlink, type FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { crc32 } from 'node:zlib';
@@ -11,6 +11,13 @@ import { StorageError } from './storage.ts';
 const ALLOWED_FLAGS = 0x0008 | 0x0800;
 
 export type LiteralPreviewOptions = Readonly<{ signal?: AbortSignal; maxExpandedBytes?: number }>;
+
+// Verification seam for the materializer: called with the completed temporary once it has been proven to be
+// the directory this call created and before it is published, so negative tests can substitute it there.
+export type LiteralMaterializeOptions = LiteralPreviewOptions & { onStaged?: (temporary: string) => void | Promise<void> };
+
+// Record of what this call created: the directory, the ownership token beside it, and the token value.
+type MaterializedOwner = Readonly<{ directory: Stats; token: Stats; value: string }>;
 
 // The second pass materializes a verified tree; the first pass only reports counts.
 type TreeVisitor = Readonly<{
@@ -286,28 +293,52 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
   return walkTreeArchive(path, spec, options);
 }
 
-// Second pass: materializes a verified archive into a directory that must not exist yet. The tree is
-// built under a unique temporary name that this call created exclusively and published with a rename,
-// so a concurrent process can never make us write into, or delete, a directory we do not own. Every
-// path comes from the validated manifest, contents are hashed while writing, and a failure removes only
-// that temporary tree. Recreating symlinks needs a privilege on Windows and is reported as invalid-state.
-export async function materializeTreeArchive(path: string, destination: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+// Second pass: materializes a verified archive into a directory that must not exist yet.
+//
+// Directory-descriptor operations are not available in Node, so the tree is built under a name created
+// exclusively with 128 random bits, an ownership token is written next to it, and both identities plus the
+// token content are re-verified before anything is published or removed. Nothing is ever deleted without
+// that proof: a failure that loses it is reported as `recovery-required` and the paths are left for review.
+// The remaining window is documented in the reliability notes: a process that learns the random name from
+// the parent listing and swaps the temporary between `mkdir` and the token write can make this call write
+// into its directory; publishing and deleting require the proof, so at worst that directory stays there.
+export async function materializeTreeArchive(path: string, destination: string, spec: TreeArchiveSpec,
+  options: LiteralMaterializeOptions = {}): Promise<LiteralPreview> {
   if (typeof destination !== 'string' || !isAbsolute(destination)) throw new StorageError('unsafe-path');
   if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
   const parent = dirname(destination);
   let temporary = '';
-  let created: Stats | undefined;
-  for (let attempt = 0; attempt < 2 && !created; attempt++) {
-    temporary = join(parent, `.${basename(destination)}.${randomUUID()}.tmp`);
+  let directory: Stats | undefined;
+  for (let attempt = 0; attempt < 2 && !directory; attempt++) {
+    temporary = join(parent, `.${basename(destination)}.${randomUUID()}.${randomUUID()}.tmp`);
     try {
       await mkdir(temporary, { mode: 0o700 });
-      created = await lstat(temporary);
+      directory = await lstat(temporary);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') continue;
       throw new StorageError('unavailable');
     }
   }
-  if (!created) throw new StorageError('unavailable');
+  if (!directory) throw new StorageError('unavailable');
+
+  // Ownership token: a file only this call created, kept beside the tree so the published tree stays clean.
+  const tokenPath = `${temporary}.owner`;
+  const tokenValue = randomUUID();
+  let token: Stats;
+  try {
+    const handle = await open(tokenPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(tokenValue, 'utf8');
+      await handle.sync();
+      token = await handle.stat();
+    } finally { await handle.close(); }
+  } catch {
+    // Without the token there is no proof of ownership, so nothing is removed and the state is reported as
+    // ambiguous for the operator or the auxiliary to inspect.
+    throw new StorageError('recovery-required');
+  }
+  const owner: MaterializedOwner = Object.freeze({ directory, token, value: tokenValue });
+
   const visitor: TreeVisitor = {
     async directory(relative, mode) { await mkdir(join(temporary, relative), { mode: mode || 0o700 }); },
     async symlink(relative, target) { await symlink(target, join(temporary, relative)); },
@@ -320,25 +351,46 @@ export async function materializeTreeArchive(path: string, destination: string, 
     },
   };
   try {
-    const result = await walkTreeArchive(path, spec, options, visitor);
-    // A directory that appeared meanwhile is never replaced: the caller gets an error instead.
+    const preview = await walkTreeArchive(path, spec, options, visitor);
+    // The tree is complete: refuse to publish unless both identities and the token content still match.
+    if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
+    await options.onStaged?.(temporary);
+    // Verified again after the seam: the only operations that touch something other than this call's own
+    // temporary are the publication and the cleanup, and both require this proof.
+    if (!await verifiedTemporary(temporary, tokenPath, owner)) throw new StorageError('recovery-required');
     if (await lstat(destination).then(() => true, () => false)) throw new StorageError('unsafe-path');
+    await unlink(tokenPath).catch(() => undefined);
     await rename(temporary, destination);
-    created = undefined;
-    return result;
-  } catch (error) {
-    throw error;
-  } finally {
-    // Only the unique temporary this call created is removed, and only while its identity matches.
-    if (created) {
-      const current = await lstat(temporary).catch(() => undefined);
-      if (current?.isDirectory() && current.dev === created.dev && current.ino === created.ino) {
-        await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
-      }
+    const published = await lstat(destination).catch(() => undefined);
+    if (!published?.isDirectory() || published.dev !== owner.directory.dev || published.ino !== owner.directory.ino) {
+      throw new StorageError('recovery-required');
     }
+    return preview;
+  } catch (error) {
+    if (error instanceof StorageError && error.code === 'recovery-required') throw error;
+    await removeOwnTemporary(temporary, tokenPath, owner);
+    throw error;
   }
 }
 
-export async function materializeLiteralArchive(path: string, destination: string, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
+// Removes the temporary tree and its token only while both are provably the ones this call created.
+async function removeOwnTemporary(temporary: string, tokenPath: string, owner: MaterializedOwner | undefined): Promise<void> {
+  if (owner && !await verifiedTemporary(temporary, tokenPath, owner)) {
+    throw new StorageError('recovery-required');
+  }
+  await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+  await unlink(tokenPath).catch(() => undefined);
+}
+
+async function verifiedTemporary(temporary: string, tokenPath: string, owner: MaterializedOwner): Promise<boolean> {
+  const directory = await lstat(temporary).catch(() => undefined);
+  if (!directory?.isDirectory() || directory.dev !== owner.directory.dev || directory.ino !== owner.directory.ino) return false;
+  const token = await lstat(tokenPath).catch(() => undefined);
+  if (!token?.isFile() || token.dev !== owner.token.dev || token.ino !== owner.token.ino) return false;
+  const value = await readFile(tokenPath, 'utf8').catch(() => '');
+  return value === owner.value;
+}
+
+export async function materializeLiteralArchive(path: string, destination: string, options: LiteralMaterializeOptions = {}): Promise<LiteralPreview> {
   return materializeTreeArchive(path, destination, LITERAL_ARCHIVE_SPEC, options);
 }

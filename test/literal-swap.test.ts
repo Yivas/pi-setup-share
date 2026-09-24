@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
 import {
@@ -377,17 +377,31 @@ async function runSwapUntilKilled(plan: SwapPlan, stopState: string, workspace: 
   });
   let diagnostics = '';
   child.stderr?.on('data', (chunk: Buffer) => { diagnostics += chunk.toString('utf8'); });
+  // The exit listener is attached before waiting: a child that dies early would otherwise be missed and
+  // the wait below could never resolve.
+  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
   try {
     const deadline = Date.now() + 60_000;
     while (!await lstat(marker).then(() => true, () => false)) {
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`the child exited before the ${stopState} cut: ${diagnostics.slice(0, 2000)}`);
       if (Date.now() > deadline) throw new Error(`the child did not reach the ${stopState} cut: ${diagnostics.slice(0, 2000)}`);
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   } finally {
     child.kill('SIGKILL');
-    await new Promise<void>(resolve => child.once('exit', () => resolve()));
+    await exited;
   }
 }
+
+test('relationship checks follow the destination filesystem case rules', { skip: process.platform !== 'win32' }, async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    // On Windows the filesystem resolves this path inside the same root even though the string differs in
+    // case, so the separation check must reject it; without folding it would look like an unrelated path.
+    const casing = join(dirname(agentDir), basename(agentDir).toUpperCase(), basename(staging));
+    await mkdir(casing, { recursive: true });
+    await assert.rejects(createSwapPlan(agentDir, casing), { code: 'unsafe-path' });
+  });
+});
 
 test('a process killed before the renames keeps the original intact and recovers conservatively', { timeout: 120_000 }, async () => {
   await fixture(async (workspace, agentDir, staging) => {

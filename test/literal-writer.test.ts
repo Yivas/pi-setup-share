@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { link, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -134,6 +134,33 @@ test('materializes a verified archive into a fresh private directory', async () 
     assert.equal(await readFile(join(destination, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
     assert.equal(await readFile(join(destination, 'nested', 'note.txt'), 'utf8'), 'synthetic note\n');
     assert.equal((await readdir(join(destination, 'nested'))).includes('empty'), true);
+  });
+});
+
+test('a temporary replaced before publication is refused and nothing foreign is removed', async () => {
+  await fixture(async (root, output) => {
+    await syntheticTree(root);
+    await writeLiteralArchive(root, output);
+    const destination = join(output, '..', 'substituted');
+    let claimed = '';
+    await assert.rejects(materializeLiteralArchive(output, destination, {
+      onStaged: async temporary => {
+        // Simulate a process that moves the verified temporary aside and puts its own directory in that
+        // place, so the name this call still holds now belongs to somebody else.
+        await rename(temporary, `${temporary}.moved`);
+        const foreign = join(temporary, '..', 'foreign-dir');
+        await mkdir(foreign);
+        await writeFile(join(foreign, 'sentinel.txt'), 'foreign data');
+        await rename(foreign, temporary);
+        claimed = temporary;
+      },
+    }), { code: 'recovery-required' });
+    // The foreign directory keeps its content, is never published and is never deleted; the moved aside tree
+    // and the ownership token stay in place because the state is ambiguous, which is what the code reports.
+    assert.equal(await readFile(join(claimed, 'sentinel.txt'), 'utf8'), 'foreign data');
+    assert.equal(await lstat(destination).then(() => true, () => false), false);
+    assert.equal(await lstat(`${claimed}.moved`).then(() => true, () => false), true);
+    assert.equal(await lstat(`${claimed}.owner`).then(() => true, () => false), true);
   });
 });
 

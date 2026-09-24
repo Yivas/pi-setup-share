@@ -55,6 +55,23 @@ const SWAP_ORDER: Record<SwapState, readonly SwapState[]> = {
 function invalid(): never { throw new StorageError('invalid-state'); }
 function unsafe(): never { throw new StorageError('unsafe-path'); }
 
+// Windows compares paths without case, so relationship checks must fold case there: otherwise a nested path
+// written with different capitalisation would look separate from its parent, which is exactly the check that
+// keeps the staging tree and the rescue paths apart from the directory being replaced.
+function folded(value: string): string {
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+function inside(child: string, parent: string): boolean {
+  const nested = folded(child);
+  const container = folded(parent);
+  return nested.startsWith(`${container}/`) || nested.startsWith(`${container}\\`);
+}
+
+function sameDirectory(left: string, right: string): boolean {
+  return folded(dirname(left)) === folded(dirname(right));
+}
+
 function checkedPath(value: unknown): string {
   if (typeof value !== 'string' || !value || !isAbsolute(value) || Buffer.byteLength(value, 'utf8') > MAX_PATH_BYTES
       || /[\p{C}]/u.test(value) || value !== value.normalize('NFC')) unsafe();
@@ -94,14 +111,12 @@ export function validateSwapJournal(value: unknown): SwapJournal {
   const backup = checkedPath(candidate.backup);
   if (new Set([agentDir, staging, rescue, backup]).size !== 4) invalid();
   // Rescue, backup and journal are siblings of the root being replaced, never inside it.
-  const parent = dirname(agentDir);
   for (const path of [rescue, backup]) {
-    if (path.startsWith(`${agentDir}/`) || path.startsWith(`${agentDir}\\`)) unsafe();
-    if (dirname(path) !== parent) unsafe();
+    if (inside(path, agentDir)) unsafe();
+    if (!sameDirectory(path, agentDir)) unsafe();
   }
   // The staged tree is separate from the root it will replace.
-  if (staging.startsWith(`${agentDir}/`) || staging.startsWith(`${agentDir}\\`)
-      || agentDir.startsWith(`${staging}/`) || agentDir.startsWith(`${staging}\\`)) unsafe();
+  if (inside(staging, agentDir) || inside(agentDir, staging)) unsafe();
   for (const [field, timestamp] of [['createdAt', candidate.createdAt], ['updatedAt', candidate.updatedAt]] as const) {
     if (typeof timestamp !== 'string' || Number.isNaN(Date.parse(timestamp))) invalid();
   }
