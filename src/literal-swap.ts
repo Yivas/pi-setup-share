@@ -37,6 +37,20 @@ export type SwapJournal = Readonly<{
 
 const JOURNAL_BYTES = 64 * 1024;
 const MAX_PATH_BYTES = 4096;
+const JOURNAL_KEYS = ['format', 'version', 'id', 'state', 'agentDir', 'staging', 'rescue', 'backup',
+  'agentIdentity', 'stagingIdentity', 'agentDigest', 'stagedDigest', 'createdAt', 'updatedAt', 'note'] as const;
+// Only these transitions can be written; a tampered journal cannot skip a durable step.
+const SWAP_ORDER: Record<SwapState, readonly SwapState[]> = {
+  staged: ['armed', 'exited', 'recovery-required'],
+  armed: ['exited', 'recovery-required'],
+  exited: ['backed-up', 'recovery-required'],
+  'backed-up': ['old-moved', 'recovery-required'],
+  'old-moved': ['new-moved', 'recovery-required'],
+  'new-moved': ['verified', 'recovery-required'],
+  verified: ['success', 'recovery-required'],
+  success: [],
+  'recovery-required': ['recovery-required'],
+};
 
 function invalid(): never { throw new StorageError('invalid-state'); }
 function unsafe(): never { throw new StorageError('unsafe-path'); }
@@ -68,15 +82,23 @@ export function validateSwapJournal(value: unknown): SwapJournal {
   if (candidate.format !== SWAP_FORMAT || candidate.version !== 1) invalid();
   if (typeof candidate.id !== 'string' || !/^[0-9a-f-]{36}$/.test(candidate.id)) invalid();
   if (typeof candidate.state !== 'string' || !(SWAP_STATES as readonly string[]).includes(candidate.state)) invalid();
+  for (const key of Object.keys(candidate)) {
+    if (!(JOURNAL_KEYS as readonly string[]).includes(key)) invalid();
+  }
   const agentDir = checkedPath(candidate.agentDir);
   const staging = checkedPath(candidate.staging);
   const rescue = checkedPath(candidate.rescue);
   const backup = checkedPath(candidate.backup);
   if (new Set([agentDir, staging, rescue, backup]).size !== 4) invalid();
   // Rescue, backup and journal are siblings of the root being replaced, never inside it.
+  const parent = dirname(agentDir);
   for (const path of [rescue, backup]) {
     if (path.startsWith(`${agentDir}/`) || path.startsWith(`${agentDir}\\`)) unsafe();
+    if (dirname(path) !== parent) unsafe();
   }
+  // The staged tree is separate from the root it will replace.
+  if (staging.startsWith(`${agentDir}/`) || staging.startsWith(`${agentDir}\\`)
+      || agentDir.startsWith(`${staging}/`) || agentDir.startsWith(`${staging}\\`)) unsafe();
   for (const [field, timestamp] of [['createdAt', candidate.createdAt], ['updatedAt', candidate.updatedAt]] as const) {
     if (typeof timestamp !== 'string' || Number.isNaN(Date.parse(timestamp))) invalid();
   }
@@ -180,6 +202,7 @@ async function advanceAt(journalPath: string, expectedId: string, state: SwapSta
   const bytes = await readFile(journalPath).catch(() => invalid());
   const current = validateSwapJournal(JSON.parse(bytes.toString('utf8')));
   if (current.id !== expectedId) invalid();
+  if (!SWAP_ORDER[current.state].includes(state)) invalid();
   const next: SwapJournal = Object.freeze({
     ...current, state, updatedAt: new Date().toISOString(),
     ...(note === undefined ? {} : { note }),
@@ -290,12 +313,16 @@ export async function runSwap(plan: SwapPlan, options: SwapRunOptions = {}): Pro
       await fail(plan, options, 'installed tree does not match the staged tree');
     }
     await transition(plan, 'verified', options);
+    // The receipt is published only after the durable transition, so it can never claim a state the
+    // journal did not confirm. If the receipt cannot be written, the journal already says success and
+    // the caller learns about the missing receipt instead of getting a silent mismatch.
+    const success = await transition(plan, 'success', options);
     const receipt: SwapReceipt = {
       format: SWAP_FORMAT, version: 1, id: journal.id, state: 'success', agentDir: journal.agentDir,
       rescue: journal.rescue, backup: journal.backup, digest: installed.digest, at: new Date().toISOString(),
     };
     await writeJsonAtomic(`${plan.journalPath}.receipt.json`, receipt);
-    return await transition(plan, 'success', options);
+    return success;
   } finally {
     // A stale lock is a state for the operator to confirm; it is never removed silently here.
     await rmdir(lockPath).catch(() => undefined);

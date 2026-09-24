@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
   advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, preflightSwap, readSwapJournal, recoverSwap, restoreReceiverBackup, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
@@ -292,5 +292,52 @@ test('preflight reports an unreadable root as well', { skip: posixSkip }, async 
     } finally {
       await chmod(agentDir, 0o700);
     }
+  });
+});
+
+test('cancellation during the backup aborts before any rename', async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    const controller = new AbortController();
+    await assert.rejects(runSwap(plan, { signal: controller.signal, onTransition: ({ state }) => {
+      if (state === 'exited') controller.abort();
+    } }), { code: 'aborted' });
+    const journal = await readSwapJournal(plan.journalPath);
+    assert.equal(journal.state, 'exited');
+    assert.equal(await lstat(journal.rescue).then(() => true, () => false), false);
+    assert.equal(await lstat(journal.backup).then(() => true, () => false), false);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await readFile(join(staging, 'settings.json'), 'utf8'), '{"synthetic":"replacement"}\n');
+    assert.equal((await readdir(workspace)).some(name => name.endsWith('.lock')), false);
+  });
+});
+
+test('a lost journal stops the swap with the original intact and refuses automatic recovery', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    const { unlink } = await import('node:fs/promises');
+    await assert.rejects(runSwap(plan, { onTransition: async ({ state }) => {
+      if (state === 'exited') await unlink(plan.journalPath);
+    } }), StorageError);
+    const gone = await lstat(plan.journalPath).then(() => true, () => false);
+    assert.equal(gone, false);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await lstat(plan.journal.rescue).then(() => true, () => false), false);
+    await assert.rejects(recoverSwap(plan.journalPath), StorageError);
+  });
+});
+
+test('a receipt that cannot be written never contradicts the journal', async () => {
+  await fixture(async (_workspace, agentDir, staging) => {
+    const plan = await createSwapPlan(agentDir, staging);
+    const receiptPath = `${plan.journalPath}.receipt.json`;
+    await mkdir(receiptPath);
+    await assert.rejects(runSwap(plan), StorageError);
+    const journal = await readSwapJournal(plan.journalPath);
+    assert.equal(journal.state, 'success');
+    assert.equal((await lstat(receiptPath)).isDirectory(), true);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":"replacement"}\n');
+    assert.equal(await readFile(join(journal.rescue, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.deepEqual((await readdir(dirname(plan.journalPath))).filter(name => name.includes('.tmp')), []);
   });
 });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import { lstat, mkdir, open, rm, symlink, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { crc32 } from 'node:zlib';
@@ -291,8 +291,10 @@ export async function previewTreeArchive(path: string, spec: TreeArchiveSpec, op
 // on Windows, so that format is refused there by the operating system and reported as invalid-state.
 export async function materializeTreeArchive(path: string, destination: string, spec: TreeArchiveSpec, options: LiteralPreviewOptions = {}): Promise<LiteralPreview> {
   if (typeof destination !== 'string' || !isAbsolute(destination)) throw new StorageError('unsafe-path');
+  let created: Stats;
   try {
     await mkdir(destination, { mode: 0o700 });
+    created = await lstat(destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') throw new StorageError('unsafe-path');
     throw new StorageError('unavailable');
@@ -311,7 +313,12 @@ export async function materializeTreeArchive(path: string, destination: string, 
   try {
     return await walkTreeArchive(path, spec, options, visitor);
   } catch (error) {
-    await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+    // Only remove the directory this call created: if a concurrent process replaced it, the identity
+    // no longer matches and the path is left untouched for a human to inspect.
+    const current = await lstat(destination).catch(() => undefined);
+    if (current?.isDirectory() && current.dev === created.dev && current.ino === created.ino) {
+      await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+    }
     throw error;
   }
 }
