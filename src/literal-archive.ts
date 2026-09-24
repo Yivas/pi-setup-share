@@ -198,7 +198,12 @@ export async function previewLiteralArchive(path: string, options: LiteralPrevie
       centralCursor += 46 + entry.fileNameLength + entry.extraFieldLength + entry.fileCommentLength;
       if (centralCursor > central.end) invalid();
       const expectedName = seen === 1 ? MANIFEST_NAME : `payload/${String(seen - 1).padStart(6, '0')}`;
-      entryName(entry, expectedName, 32);
+      const centralExtras = entryName(entry, expectedName, 32);
+      const centralZip64 = centralExtras.get(0x0001);
+      // Our writer stores [uncompressed, compressed, localOffset] in the central ZIP64 extra when forced.
+      if (centralZip64 && centralZip64.length === 24
+          && (uint64(centralZip64, 0) !== entry.uncompressedSize || uint64(centralZip64, 8) !== entry.compressedSize
+              || uint64(centralZip64, 16) !== entry.relativeOffsetOfLocalHeader)) invalid();
       if (entry.relativeOffsetOfLocalHeader !== localCursor) invalid();
       const local = await zip.readLocalFileHeaderPromise(entry);
       const localExtras = extras(local.extraField);
@@ -215,7 +220,9 @@ export async function previewLiteralArchive(path: string, options: LiteralPrevie
           || (!matching && ((entry.generalPurposeBitFlag & 0x0008) === 0 || (!deferred && !zip64Sizes)))) invalid();
       const dataEnd = local.fileDataStart + entry.compressedSize;
       if (!Number.isSafeInteger(dataEnd) || dataEnd > central.offset) invalid();
-      localCursor = dataEnd + await descriptorSize(file, entry, dataEnd, central.offset, Boolean(zip64));
+      // A data descriptor uses 8-byte sizes when the entry is ZIP64 anywhere, not only when the local
+      // header carries the extra: streamed ZIP64 entries keep zero local sizes and no local extra.
+      localCursor = dataEnd + await descriptorSize(file, entry, dataEnd, central.offset, Boolean(zip64) || Boolean(centralZip64));
       if (localCursor > central.offset) invalid();
       if (seen === 1) {
         if (entry.uncompressedSize > MANIFEST_BYTES) throw new StorageError('limit-exceeded');

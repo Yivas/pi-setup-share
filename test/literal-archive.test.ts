@@ -4,6 +4,7 @@ import { createWriteStream } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { test } from 'node:test';
 import * as yazl from 'yazl';
@@ -62,6 +63,16 @@ function injectFirstLocalExtra(archive: Buffer, extra: Buffer): Buffer {
 async function rejectsArchive(entries: { name: string; bytes: Buffer }[]): Promise<void> {
   await fixture(entries, async path => {
     await assert.rejects(previewLiteralArchive(path), { code: 'invalid-state' });
+  });
+}
+
+// Builds the normal archive, applies a byte-level mutation and expects rejection without extraction.
+async function rejectsMutated(mutate: (archive: Buffer) => Buffer): Promise<void> {
+  await fixture(normalEntries(), async path => {
+    const mutated = mutate(await readFile(path));
+    const target = `${path}.mutated`;
+    await writeFile(target, mutated, { mode: 0o600 });
+    await assert.rejects(previewLiteralArchive(target), { code: 'invalid-state' });
   });
 }
 
@@ -162,4 +173,108 @@ test('literal preview rejects changed file bytes even when length is unchanged',
     await writeFile(path, zip);
     await assert.rejects(previewLiteralArchive(path), { code: 'invalid-state' });
   });
+});
+
+test('literal preview rejects truncation, appended data and an EOCD comment', async () => {
+  await rejectsMutated(archive => archive.subarray(0, archive.length - 10));
+  await rejectsMutated(archive => Buffer.concat([archive, Buffer.from('synthetic junk')]));
+  await rejectsMutated(archive => { const mutated = Buffer.from(archive); mutated.writeUInt16LE(1, mutated.length - 2); return mutated; });
+});
+
+test('literal preview rejects unsupported compression, encryption and non-regular entry modes', async () => {
+  await rejectsMutated(archive => {
+    const mutated = Buffer.from(archive);
+    mutated.writeUInt16LE(12, 8);
+    const central = mutated.readUInt32LE(mutated.length - 22 + 16);
+    mutated.writeUInt16LE(12, central + 10);
+    return mutated;
+  });
+  await rejectsMutated(archive => {
+    const mutated = Buffer.from(archive);
+    mutated.writeUInt16LE(mutated.readUInt16LE(6) | 1, 6);
+    const central = mutated.readUInt32LE(mutated.length - 22 + 16);
+    mutated.writeUInt16LE(mutated.readUInt16LE(central + 8) | 1, central + 8);
+    return mutated;
+  });
+  for (const mode of [0xa1ff, 0x41ed]) await rejectsMutated(archive => {
+    const mutated = Buffer.from(archive);
+    const central = mutated.readUInt32LE(mutated.length - 22 + 16);
+    mutated.writeUInt32LE((mode << 16) >>> 0, central + 38);
+    return mutated;
+  });
+});
+
+test('literal preview rejects a central size contradicting the payload entry', async () => {
+  await rejectsMutated(archive => {
+    const mutated = Buffer.from(archive);
+    const central = mutated.readUInt32LE(mutated.length - 22 + 16);
+    mutated.writeUInt32LE(content.length - 1, central + 24);
+    return mutated;
+  });
+});
+
+test('literal preview reads a streamed ZIP64 entry whose local header keeps zero sizes', { timeout: 120_000 }, async () => {
+  const total = 1024 ** 2;
+  const block = Buffer.alloc(64 * 1024);
+  const sha256 = createHash('sha256').update(Buffer.alloc(total)).digest('hex');
+  const streamed = {
+    format: 'pi-setup-share-literal', version: 1, root: 'agentDir', sourcePlatform: 'linux', totalBytes: total,
+    entries: [{ path: 'synthetic-streamed.bin', type: 'file', mode: 0o600, size: total, sha256 }],
+  };
+  const dir = await mkdtemp(join(tmpdir(), 'pi-literal-archive-stream-'));
+  const path = join(dir, 'streamed.zip');
+  try {
+    const zip = new yazl.ZipFile();
+    zip.addBuffer(Buffer.from(JSON.stringify(streamed)), 'manifest.json', { compress: false, forceDosTimestamp: true });
+    zip.addReadStream(Readable.from((function* () {
+      for (let written = 0; written < total; written += block.length) {
+        yield block.subarray(0, Math.min(block.length, total - written));
+      }
+    })()), 'payload/000001', { size: total, compress: true, forceZip64Format: true, forceDosTimestamp: true });
+    zip.end({ forceZip64Format: true, comment: '' });
+    await pipeline(zip.outputStream, createWriteStream(path, { flags: 'wx', mode: 0o600 }));
+    const result = await previewLiteralArchive(path, { maxExpandedBytes: total });
+    assert.deepEqual(result, { sourcePlatform: 'linux', files: 1, directories: 0, symlinks: 0, totalBytes: total });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('literal preview rejects a future manifest version inside an otherwise valid archive', async () => {
+  await rejectsArchive([
+    { name: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...manifest, version: 2 })) },
+    { name: 'payload/000001', bytes: content },
+  ]);
+});
+
+test('literal preview reads a synthetic ZIP64 entry whose uncompressed size exceeds 4 GiB', { timeout: 600_000 }, async () => {
+  const total = 4 * 1024 ** 3 + 1;
+  const block = Buffer.alloc(1024 ** 2);
+  const hash = createHash('sha256');
+  for (let written = 0; written < total; written += block.length) {
+    hash.update(block.subarray(0, Math.min(block.length, total - written)));
+  }
+  const sha256 = hash.digest('hex');
+  const large = {
+    format: 'pi-setup-share-literal', version: 1, root: 'agentDir', sourcePlatform: 'linux', totalBytes: total,
+    entries: [{ path: 'synthetic-large.bin', type: 'file', mode: 0o600, size: total, sha256 }],
+  };
+  const dir = await mkdtemp(join(tmpdir(), 'pi-literal-archive-large-'));
+  const path = join(dir, 'large.zip');
+  try {
+    const zip = new yazl.ZipFile();
+    zip.addBuffer(Buffer.from(JSON.stringify(large)), 'manifest.json', { compress: false, forceDosTimestamp: true });
+    zip.addReadStream(Readable.from((function* () {
+      for (let written = 0; written < total; written += block.length) {
+        yield block.subarray(0, Math.min(block.length, total - written));
+      }
+    })()), 'payload/000001', { size: total, compress: true, forceZip64Format: true, forceDosTimestamp: true });
+    zip.end({ forceZip64Format: true, comment: '' });
+    await pipeline(zip.outputStream, createWriteStream(path, { flags: 'wx', mode: 0o600 }));
+    const result = await previewLiteralArchive(path, { maxExpandedBytes: total });
+    assert.deepEqual(result, { sourcePlatform: 'linux', files: 1, directories: 0, symlinks: 0, totalBytes: total });
+    await assert.rejects(previewLiteralArchive(path), { code: 'limit-exceeded' });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
