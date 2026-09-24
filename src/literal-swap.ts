@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { type Stats } from 'node:fs';
 import { lstat, mkdir, open, readFile, rename, rmdir, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
-import { previewReceiverBackup, writeReceiverBackup } from './literal-backup.ts';
+import { materializeReceiverBackup, previewReceiverBackup, writeReceiverBackup } from './literal-backup.ts';
 import { digestTree } from './literal-writer.ts';
 import { StorageError } from './storage.ts';
 
@@ -330,4 +330,21 @@ export async function recoverSwap(journalPath: string, options: SwapRunOptions =
     return advanceAt(journalPath, journal.id, 'recovery-required', note);
   }
   return advanceAt(journalPath, journal.id, 'recovery-required', 'agent directory present; nothing changed');
+}
+
+// Restores a verified receiver backup over the agent directory: validate the archive, materialize it in
+// a fresh sibling tree and run the same deferred swap, which first backs the current state up again.
+// A failure before materialization leaves the destination untouched; a later failure keeps every piece.
+export async function restoreReceiverBackup(backupPath: string, agentDir: string, options: SwapRunOptions & Readonly<{ maxExpandedBytes?: number }> = {}): Promise<SwapJournal> {
+  const root = checkedPath(agentDir);
+  const staging = siblingPath(root, `.restore-${randomUUID()}`);
+  const archiveOptions = {
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.maxExpandedBytes === undefined ? {} : { maxExpandedBytes: options.maxExpandedBytes }),
+  };
+  checkAbort(options.signal);
+  await previewReceiverBackup(backupPath, archiveOptions);
+  await materializeReceiverBackup(backupPath, staging, archiveOptions);
+  const plan = await createSwapPlan(root, staging);
+  return runSwap(plan, options);
 }

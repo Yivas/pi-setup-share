@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, readSwapJournal, recoverSwap, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
+  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, readSwapJournal, recoverSwap, restoreReceiverBackup, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
 } from '../src/literal-swap.ts';
-import { previewReceiverBackup } from '../src/literal-backup.ts';
+import { previewReceiverBackup, writeReceiverBackup } from '../src/literal-backup.ts';
 import { digestTree } from '../src/literal-writer.ts';
 import { StorageError } from '../src/storage.ts';
 import { lstat } from 'node:fs/promises';
@@ -180,5 +180,41 @@ test('recovery reports an installed tree without deleting anything', async () =>
     assert.equal(await lstat(journal.rescue).then(() => true, () => false), true);
     assert.equal(await lstat(journal.backup).then(() => true, () => false), true);
     assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":"replacement"}\n');
+  });
+});
+
+test('restores a verified receiver backup over the agent directory', async () => {
+  await fixture(async (workspace, agentDir) => {
+    const backup = join(workspace, 'receiver-backup.zip');
+    await writeReceiverBackup(agentDir, backup);
+    await writeFile(join(agentDir, 'settings.json'), '{"synthetic":"later state"}\n');
+    const journal = await restoreReceiverBackup(backup, agentDir);
+    assert.equal(journal.state, 'success');
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), '{"synthetic":true}\n');
+    assert.equal(await readFile(join(journal.rescue, 'settings.json'), 'utf8'), '{"synthetic":"later state"}\n');
+    assert.equal((await previewReceiverBackup(journal.backup)).files >= 1, true);
+    const receipt = JSON.parse(await readFile(`${journal.agentDir}.swap-${journal.id}.json.receipt.json`, 'utf8'));
+    assert.equal(receipt.state, 'success');
+  });
+});
+
+test('refuses an altered backup or a literal archive without touching the destination', async () => {
+  await fixture(async (workspace, agentDir) => {
+    const backup = join(workspace, 'receiver-backup.zip');
+    await writeReceiverBackup(agentDir, backup);
+    const original = await readFile(backup);
+    const altered = Buffer.from(original);
+    altered[altered.length - 60] = (altered[altered.length - 60] ?? 0) ^ 1;
+    const alteredPath = join(workspace, 'altered.zip');
+    await writeFile(alteredPath, altered);
+    const before = await readFile(join(agentDir, 'settings.json'), 'utf8');
+    await assert.rejects(restoreReceiverBackup(alteredPath, agentDir), StorageError);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), before);
+    assert.deepEqual((await readdir(workspace)).filter(name => name.includes('.restore-')), []);
+    const { writeLiteralArchive } = await import('../src/literal-writer.ts');
+    const literal = join(workspace, 'literal.zip');
+    await writeLiteralArchive(agentDir, literal);
+    await assert.rejects(restoreReceiverBackup(literal, agentDir), StorageError);
+    assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), before);
   });
 });
