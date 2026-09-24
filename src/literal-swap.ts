@@ -5,10 +5,11 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { type Stats } from 'node:fs';
-import { lstat, mkdir, open, readFile, rename, rmdir, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, rmdir, statfs, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { materializeReceiverBackup, previewReceiverBackup, writeReceiverBackup } from './literal-backup.ts';
-import { digestTree } from './literal-writer.ts';
+import { LITERAL_ARCHIVE_SPEC } from './literal-manifest.ts';
+import { digestTree, type TreeDigest } from './literal-writer.ts';
 import { StorageError } from './storage.ts';
 
 export const SWAP_FORMAT = 'pi-setup-share-literal-swap' as const;
@@ -347,4 +348,45 @@ export async function restoreReceiverBackup(backupPath: string, agentDir: string
   await materializeReceiverBackup(backupPath, staging, archiveOptions);
   const plan = await createSwapPlan(root, staging);
   return runSwap(plan, options);
+}
+
+export type SwapPreflight = Readonly<{ ok: boolean; reasons: readonly string[]; freeBytes: number;
+  requiredBytes: number; marginBytes: number; agentFiles: number; stagedFiles: number;
+  agentBytes: number; stagedBytes: number }>;
+
+export type SwapPreflightOptions = SwapRunOptions & Readonly<{ extraBytes?: number; marginBytes?: number }>;
+
+// Read-only preflight: it never writes, installs or moves anything, and reports every reason it found.
+// Space is checked with the filesystem counters, so the caller can abort before creating any copy.
+export async function preflightSwap(agentDir: string, staging: string, options: SwapPreflightOptions = {}): Promise<SwapPreflight> {
+  checkAbort(options.signal);
+  const reasons: string[] = [];
+  const treeOptions = {
+    ...(options.signal ? { signal: options.signal } : {}),
+  };
+  let agentDigest: TreeDigest | undefined;
+  let stagingDigest: TreeDigest | undefined;
+  try {
+    const stats = await lstat(agentDir);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) reasons.push('unsafe-root');
+    else agentDigest = await digestTree(agentDir, LITERAL_ARCHIVE_SPEC, treeOptions);
+  } catch { reasons.push('unreadable-root'); }
+  try {
+    const stats = await lstat(staging);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) reasons.push('unsafe-staging');
+    else stagingDigest = await digestTree(staging, LITERAL_ARCHIVE_SPEC, treeOptions);
+  } catch { reasons.push('unreadable-staging'); }
+  let freeBytes = -1;
+  try {
+    const counters = await statfs(dirname(agentDir));
+    freeBytes = Number(counters.bavail) * Number(counters.bsize);
+  } catch { reasons.push('unavailable-space'); }
+  const requiredBytes = (agentDigest?.totalBytes ?? 0) + (options.extraBytes ?? 0);
+  const marginBytes = options.marginBytes ?? Math.max(64 * 1024 ** 2, Math.ceil(requiredBytes / 10));
+  if (freeBytes >= 0 && freeBytes - requiredBytes < marginBytes) reasons.push('insufficient-space');
+  return Object.freeze({
+    ok: reasons.length === 0, reasons: Object.freeze(reasons), freeBytes, requiredBytes, marginBytes,
+    agentFiles: agentDigest?.files ?? 0, stagedFiles: stagingDigest?.files ?? 0,
+    agentBytes: agentDigest?.totalBytes ?? 0, stagedBytes: stagingDigest?.totalBytes ?? 0,
+  });
 }

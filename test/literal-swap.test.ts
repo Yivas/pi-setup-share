@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, readSwapJournal, recoverSwap, restoreReceiverBackup, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
+  advanceSwapJournal, captureIdentity, createSwapPlan, identityMatches, preflightSwap, readSwapJournal, recoverSwap, restoreReceiverBackup, runSwap, SWAP_FORMAT, validateSwapJournal, writeSwapJournal,
 } from '../src/literal-swap.ts';
 import { previewReceiverBackup, writeReceiverBackup } from '../src/literal-backup.ts';
 import { digestTree } from '../src/literal-writer.ts';
@@ -216,5 +216,34 @@ test('refuses an altered backup or a literal archive without touching the destin
     await writeLiteralArchive(agentDir, literal);
     await assert.rejects(restoreReceiverBackup(literal, agentDir), StorageError);
     assert.equal(await readFile(join(agentDir, 'settings.json'), 'utf8'), before);
+  });
+});
+
+test('preflights the swap without writing anything', async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const before = (await readdir(workspace)).sort();
+    const report = await preflightSwap(agentDir, staging);
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.reasons, []);
+    assert.equal(report.agentFiles, 1);
+    assert.equal(report.stagedFiles, 1);
+    assert.equal(report.agentBytes, Buffer.byteLength('{"synthetic":true}\n'));
+    assert.equal(report.stagedBytes, Buffer.byteLength('{"synthetic":"replacement"}\n'));
+    assert.equal(report.freeBytes > 0, true);
+    assert.deepEqual((await readdir(workspace)).sort(), before);
+  });
+});
+
+test('preflight reports unreadable trees and insufficient space', async () => {
+  await fixture(async (workspace, agentDir, staging) => {
+    const missingStaging = await preflightSwap(agentDir, join(workspace, 'missing'));
+    assert.equal(missingStaging.ok, false);
+    assert.deepEqual(missingStaging.reasons, ['unreadable-staging']);
+    const missingRoot = await preflightSwap(join(workspace, 'missing'), staging);
+    assert.deepEqual(missingRoot.reasons, ['unreadable-root']);
+    const tight = await preflightSwap(agentDir, staging, { extraBytes: 10 * 1024 ** 4 });
+    assert.equal(tight.ok, false);
+    assert.deepEqual(tight.reasons, ['insufficient-space']);
+    assert.equal(tight.requiredBytes > 10 * 1024 ** 4, true);
   });
 });
