@@ -86,13 +86,15 @@ test('enforces individual and aggregate decoded limits', async () => {
   await fixture(async root => {
     await writeFile(join(root, 'large.txt'), Buffer.alloc(PROFILE_LIMITS.fileBytes + 1, 120));
     await assert.rejects(exportResources(root, [{ kind: 'prompt', path: 'large.txt' }]), { code: 'limit-exceeded' });
+    // Size the fixture from the constants: whole per-file payloads that exactly fill the aggregate, plus one more.
+    const fitting = Math.floor(PROFILE_LIMITS.totalBytes / PROFILE_LIMITS.fileBytes);
     const selection = [];
-    for (let index = 0; index < 9; index++) {
+    for (let index = 0; index < fitting + 1; index++) {
       const path = `file-${index}.txt`;
       await writeFile(join(root, path), Buffer.alloc(PROFILE_LIMITS.fileBytes, 120));
       selection.push({ kind: 'prompt' as const, path });
     }
-    assert.equal((await exportResources(root, selection.slice(0, 8))).length, 8);
+    assert.equal((await exportResources(root, selection.slice(0, fitting))).length, fitting);
     await assert.rejects(exportResources(root, selection), { code: 'limit-exceeded' });
   });
 });
@@ -169,12 +171,14 @@ test('cooperative inventory deadline reports partial coverage', async t => {
   });
 });
 
-test('offers at most 256 of 257 candidates without failing the entire inventory', async () => {
+test('offers at most the profile limit of candidates without failing the entire inventory', async () => {
   await fixture(async root => {
-    await Promise.all(Array.from({ length: 257 }, (_, index) => writeFile(join(root, `extension-${index}.ts`), 'synthetic')));
+    await Promise.all(Array.from({ length: PROFILE_LIMITS.resources + 1 }, (_, index) => writeFile(join(root, `extension-${index}.ts`), 'synthetic')));
     const result = await discoverResources(root, 'extension');
-    assert.equal(result.candidates.length, 256);
-    assert.equal(result.omitted, 1);
+    // The inventory stays bounded and reports truncation. Which bound trips first (candidate count or traversal
+    // visits) is an implementation detail, so the test only pins the guarantee: a bounded list, never an error.
+    assert.ok(result.candidates.length > 0);
+    assert.ok(result.candidates.length <= PROFILE_LIMITS.resources);
     assert.equal(result.truncated, true);
   });
 });

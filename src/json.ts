@@ -1,7 +1,11 @@
 import { ProfileError, requireDataArray, requireDataRecord } from './validation.ts';
 
+// Ceilings for one serialized or stored value. They must stay above PROFILE_LIMITS.jsonBytes: a whole-installation
+// profile travels and is staged as a single stored file, so these bounds cannot be lower than the profile itself.
+const MAX_SERIALIZED_BYTES = 64 * 1024 * 1024;
+
 export function stringifyBounded(value: unknown, limit: number, pretty = true): string {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32 * 1024 * 1024) throw new ProfileError('limit-exceeded', 'json');
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SERIALIZED_BYTES) throw new ProfileError('limit-exceeded', 'json');
   let size = 1; // Final newline.
   let nodes = 0;
   const add = (bytes: number): void => {
@@ -46,7 +50,7 @@ export function stringifyBounded(value: unknown, limit: number, pretty = true): 
 }
 
 export function parseBoundedJson(text: string, limit = 4 * 1024 * 1024): unknown {
-  if (typeof text !== 'string' || !Number.isSafeInteger(limit) || limit < 1 || limit > 32 * 1024 * 1024
+  if (typeof text !== 'string' || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SERIALIZED_BYTES
       || Buffer.byteLength(text) > limit) throw new ProfileError('limit-exceeded', 'json');
   let depth = 0;
   let tokens = 0;

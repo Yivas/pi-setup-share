@@ -24,6 +24,10 @@
 
 ### Changed
 
+- Raised the profile limits so a whole installation fits in one export: 1024 resource entries, 4 MiB per file, 24 MiB of decoded content and 48 MiB of serialized JSON (archive accepted up to 49 MiB). Resource discovery stops at the same entry count instead of hiding files a profile could hold. The receiver validates and stages with the same numbers, and the bound on reading applied history stays at 32 MiB so a bigger export never widens how much backup data one inspection may read.
+
+### Changed
+
 - The documented requirement says Pi 0.85.0 or newer: the extension was built and tested against 0.85.0 and verified by hand on 0.87.1.
 
 ## 0.3.0 — 2026-09-23

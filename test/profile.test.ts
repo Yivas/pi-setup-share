@@ -162,9 +162,10 @@ test('limits resource count and aggregate decoded bytes', () => {
   const maximum = Array.from({ length: PROFILE_LIMITS.resources }, (_, index) => resource(`${index}.md`, ''));
   assert.equal(validateProfile(profile(maximum)).resources.length, PROFILE_LIMITS.resources);
   rejects(profile([...maximum, resource('extra.md', '')]), 'limit-exceeded');
-  const content = 'x'.repeat(PROFILE_LIMITS.fileBytes);
-  const entries = Array.from({ length: 8 }, (_, index) => resource(`${index}.md`, content));
-  assert.equal(validateProfile(profile(entries)).resources.length, 8);
+  // Fill the aggregate with whole per-file payloads, then add one more to cross it.
+  const fitting = Math.floor(PROFILE_LIMITS.totalBytes / PROFILE_LIMITS.fileBytes);
+  const entries = Array.from({ length: fitting }, (_, index) => resource(`${index}.md`, 'x'.repeat(PROFILE_LIMITS.fileBytes)));
+  assert.equal(validateProfile(profile(entries)).resources.length, fitting);
   rejects(profile([...entries, resource('extra.md', 'x')]), 'limit-exceeded');
 });
 

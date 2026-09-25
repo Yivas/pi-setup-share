@@ -4,6 +4,10 @@ import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
 export type StorageErrorCode = 'unavailable' | 'unsafe-path' | 'changed' | 'limit-exceeded' | 'busy' | 'invalid-state' | 'recovery-required' | 'consent-required' | 'aborted' | 'installation-abandoned';
+// Ceiling for one stored file. A whole-installation profile is written and read back as a single stored file, so
+// this stays above PROFILE_LIMITS.jsonBytes.
+const MAX_STORED_BYTES = 64 * 1024 * 1024;
+
 export class StorageError extends Error {
   readonly code: StorageErrorCode;
   // Optional item identity for failures that concern one package or reference, never a value or path.
@@ -86,7 +90,7 @@ export class FileStore {
 
   async read(path: string, limit = 4 * 1024 * 1024): Promise<FileSnapshot> {
     try {
-      if (!Number.isSafeInteger(limit) || limit < 0 || limit > 32 * 1024 * 1024) throw new StorageError('limit-exceeded');
+      if (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_STORED_BYTES) throw new StorageError('limit-exceeded');
       const before = await this.inspect(path);
       if (!before) return { bytes: null, hash: null, signature: null };
       if (before.size < 0n || before.size > BigInt(limit)) throw new StorageError('limit-exceeded');
@@ -110,7 +114,7 @@ export class FileStore {
   }
 
   async matches(path: string, expected: FileSnapshot): Promise<boolean> {
-    const actual = await this.read(path, 32 * 1024 * 1024);
+    const actual = await this.read(path, MAX_STORED_BYTES);
     return actual.hash === expected.hash && actual.signature === expected.signature;
   }
 
@@ -153,7 +157,7 @@ export class FileStore {
     let temporary: string | undefined;
     try {
       segments(path);
-      if (bytes.byteLength > 32 * 1024 * 1024) throw new StorageError('limit-exceeded');
+      if (bytes.byteLength > MAX_STORED_BYTES) throw new StorageError('limit-exceeded');
       const content = Buffer.from(bytes);
       if (!await this.matches(path, expected)) throw new StorageError('changed');
       const parent = dirname(path).replaceAll('\\', '/');
@@ -165,7 +169,7 @@ export class FileStore {
       if (!await this.matches(path, expected)) throw new StorageError('changed');
       await rename(temporary, join(this.root, path));
       temporary = undefined;
-      const result = await this.read(path, 32 * 1024 * 1024);
+      const result = await this.read(path, MAX_STORED_BYTES);
       if (result.hash !== digest(content)) throw new StorageError('changed');
       return result;
     } catch (error) { return safeError(error); }

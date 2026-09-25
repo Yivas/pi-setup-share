@@ -7,12 +7,16 @@ import { ProfileError, requireRecord, requireDataArray } from './validation.ts';
 import { validateTransferReport, type TransferReport } from './transfer-report.ts';
 export { ProfileError, type ProfileErrorCode } from './validation.ts';
 
+// Bounds for one profile. They cover a whole installation in one export: one entry per selected live file, up
+// to PROFILE_LIMITS.resources entries, 4 MiB per file and 24 MiB of decoded content. The serialized JSON holds
+// that content (base64 for binary files), so jsonBytes stays above the aggregate, and the receiver validates
+// with the same numbers.
 export const PROFILE_LIMITS = Object.freeze({
-  jsonBytes: 16 * 1024 * 1024,
+  jsonBytes: 48 * 1024 * 1024,
   depth: 8,
-  resources: 256,
-  fileBytes: 1024 * 1024,
-  totalBytes: 8 * 1024 * 1024,
+  resources: 1024,
+  fileBytes: 4 * 1024 * 1024,
+  totalBytes: 24 * 1024 * 1024,
   pathBytes: 240,
   segmentBytes: 100,
 });

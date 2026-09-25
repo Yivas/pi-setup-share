@@ -20,7 +20,12 @@ const pendingPath = 'setup-share/pending.json';
 const pendingLimit = 8192;
 const ownerText = '{"format":"pi-setup-share-store","version":1}\n';
 const absent: FileSnapshot = { bytes: null, hash: null, signature: null };
-const journalLimit = 32 * 1024 * 1024;
+// Bound for one stored file or serialized journal: a whole-installation profile is staged as a stored file, so
+// this must stay above PROFILE_LIMITS.jsonBytes and never above the serializer ceiling (64 MiB).
+const journalLimit = 64 * 1024 * 1024;
+// Cumulative bound while inspecting applied history. Kept separate from the transaction bound above so raising
+// the export size never widens how much backup data one inspection may read.
+const appliedHistoryLimit = 32 * 1024 * 1024;
 
 export function isImportId(id: string): boolean { return typeof id === 'string' && uuid.test(id); }
 
@@ -89,7 +94,7 @@ function decodeJournal(bytes: Buffer | null, id: string): Journal {
     } else {
       if (typeof value.before !== 'string' || typeof value.beforeHash !== 'string' || !hash.test(value.beforeHash)) throw new StorageError('invalid-state');
       total += Buffer.byteLength(value.before, 'base64');
-      if (total > 16 * 1024 * 1024) throw new StorageError('invalid-state');
+      if (total > 32 * 1024 * 1024) throw new StorageError('invalid-state');
       const original = Buffer.from(value.before, 'base64');
       if (original.toString('base64') !== value.before || digest(original) !== value.beforeHash) throw new StorageError('invalid-state');
     }
@@ -117,9 +122,9 @@ export async function appliedTransactionsFor(store: FileStore, path: string, exp
       if (++entries > 4096) throw new StorageError('limit-exceeded');
       if (!entry.name.endsWith('.json') || !isImportId(entry.name.slice(0, -5))) continue;
       const id = entry.name.slice(0, -5);
-      const snapshot = await store.read(journalPath(id), journalLimit - bytes);
+      const snapshot = await store.read(journalPath(id), appliedHistoryLimit - bytes);
       bytes += snapshot.bytes?.byteLength ?? 0;
-      if (bytes > journalLimit) throw new StorageError('limit-exceeded');
+      if (bytes > appliedHistoryLimit) throw new StorageError('limit-exceeded');
       const journal = decodeJournal(snapshot.bytes, id);
       const change = journal.entries.find(entry => entry.path === path);
       if (journal.state === 'applied' && change) {
@@ -162,7 +167,7 @@ export async function commitChanges(store: FileStore, changes: readonly FileChan
   const selected = changes.map(change => {
     total += change.before.bytes?.byteLength ?? 0;
     afterTotal += change.bytes.byteLength;
-    if (total > 16 * 1024 * 1024 || afterTotal > journalLimit) throw new StorageError('limit-exceeded');
+    if (total > 32 * 1024 * 1024 || afterTotal > journalLimit) throw new StorageError('limit-exceeded');
     const before = change.before;
     if (before.bytes === null ? before.hash !== null || before.signature !== null
       : !Buffer.isBuffer(before.bytes) || digest(before.bytes) !== before.hash || typeof before.signature !== 'string') throw new StorageError('invalid-state');

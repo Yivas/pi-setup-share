@@ -21,7 +21,7 @@ Filesystem checks and journals address ordinary changes and interrupted operatio
 
 The assistant keeps profile data out of model messages, session entries, and its diagnostics. Displayed data can still be recorded by the terminal or observed by other extensions in the same Pi process. Selected resource contents are transferred and can contain secrets that filename rules cannot detect. Known sensitive names and root locations are excluded on export, and known sensitive relative paths are rejected on import; neither check is content scanning. The report gives bounded category counts, not evidence that the sender scanned every file or that the imported code is safe. Incomplete profile exports and package attempts are retained rather than automatically deleted or reused.
 
-A ZIP is rejected when it has extra or renamed entries, directories, encryption, comments, inconsistent sizes, an invalid CRC, unsupported structure, more than 17 MiB compressed, or more than 16 MiB of profile JSON. These checks reduce archive traversal and decompression-bomb risk; they do not authenticate the sender or make profile contents trustworthy.
+A ZIP is rejected when it has extra or renamed entries, directories, encryption, comments, inconsistent sizes, an invalid CRC, unsupported structure, more than 49 MiB compressed, or more than 48 MiB of profile JSON. These checks reduce archive traversal and decompression-bomb risk; they do not authenticate the sender or make profile contents trustworthy.
 
 MCP export includes only portable servers. Servers with local transports, paths, sockets, private endpoints, secret-like arguments, or invalid fields remain outside the archive; the UI reports their validated names and a safe local reason without copying rejected values.
 
