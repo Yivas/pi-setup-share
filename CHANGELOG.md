@@ -13,11 +13,14 @@
 - Progress reports counts, phases and outcomes only. It never shows paths, values or file contents, and each increment confirms one durable write rather than the completion of the operation: success is announced only after the whole transaction commits.
 - The whole-directory copy machinery (literal transfer) is not part of this release: it has no entry point in the assistant and cannot be enabled. Pi 0.85.0 does not hand an extension a verifiable identity for the root Pi was using, and Windows ACLs cannot be checked from Node, so the mode stays disconnected and documented instead of offered.
 
-## Unreleased
+## 0.4.1 — 2026-09-25
 
 ### Fixed
 
-- Long review lists no longer grow upwards over Pi's own frame. The body of a review is sized so the whole component always leaves rows free for the header, input, status and footer; with a long profile summary the beginning of the review used to scroll out of sight in a real terminal. Selection lists reserve the same margin.
+- Long review lists no longer grow upwards over Pi's own frame. The body of a review is sized so the whole component always leaves rows free for the header, input, status and footer; with a long profile summary the beginning of the review used to scroll out of sight in a real terminal. Selection lists, confirmations and operation screens reserve the same margin and clamp their output to it, so a very short terminal shows less instead of drawing over the frame.
+- Package metadata: `repository.url` uses the form npm expects, so publishing no longer rewrites it.
+
+## Unreleased
 
 ## 0.3.0 — 2026-09-23
 
