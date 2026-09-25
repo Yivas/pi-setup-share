@@ -15,6 +15,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Long review lists no longer grow upwards over Pi's own frame. The body of a review is sized so the whole component always leaves rows free for the header, input, status and footer; with a long profile summary the beginning of the review used to scroll out of sight in a real terminal. Selection lists reserve the same margin.
+
 ## 0.3.0 — 2026-09-23
 
 ### Added

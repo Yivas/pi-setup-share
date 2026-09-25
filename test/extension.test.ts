@@ -46,7 +46,8 @@ test('native Pi loads and registers setup-share without factory I/O or model use
               await confirmStep({ ui: { custom: factory => new Promise(resolve => {
                 const component = factory(tui, ctx.ui.theme, {}, resolve);
                 const lines = component.render(width);
-                assert.ok(lines.length <= rows);
+                // The component must leave room for Pi's own frame, not use every terminal row.
+                assert.ok(lines.length <= rows - 6);
                 renders.push('', ...lines);
                 component.handleInput('\\x1b');
               }) } }, title, warning);

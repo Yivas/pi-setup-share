@@ -14,6 +14,12 @@ function listTheme(theme: Theme) {
   };
 }
 
+// Lines a review adds around its body: the title, a blank line, up to three navigation rows and the help
+// line, plus the frame Pi keeps for its own header, input, status and footer. The body is sized so the
+// whole component always leaves at least six rows free: without that margin a long list grew upwards over
+// Pi's frame and the beginning of the review scrolled out of sight in a real terminal.
+const REVIEW_RESERVE = 12;
+
 export function reviewComponent(tui: TUI, theme: Theme, done: () => void, lines: readonly string[]): Component {
   let page = 0;
   let pages = 1;
@@ -36,7 +42,7 @@ export function reviewComponent(tui: TUI, theme: Theme, done: () => void, lines:
   let choices = navigation();
   return {
     render(width) {
-      const rows = Math.max(1, tui.terminal.rows - 10);
+      const rows = Math.max(1, tui.terminal.rows - REVIEW_RESERVE);
       const body = text.render(width);
       const previousPages = pages;
       const previousPage = page;
@@ -138,7 +144,7 @@ export function selectionComponent(
   function rebuild(index = 0): void {
     const controls = selectAllLabel && items.length ? [{ value: selectAllValue, label: safeDisplay(selectAllLabel) }] : [];
     list = new SelectList([...controls, ...items.map(item => ({ value: item.value, label: `${selected.has(item.value) ? '[x]' : '[ ]'} ${safeDisplay(item.label)}` })),
-      { value: continueValue, label: en.continue }], Math.max(2, Math.min(12, tui.terminal.rows - 8)), listTheme(theme));
+      { value: continueValue, label: en.continue }], Math.min(12, Math.max(2, tui.terminal.rows - 10)), listTheme(theme));
     list.setSelectedIndex(index);
     list.onCancel = () => done(undefined);
     list.onSelect = item => {

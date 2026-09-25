@@ -33,13 +33,25 @@ function context(menu: (string | ((options: string[]) => string))[], inputs: str
       onScreen?.(rendered);
       if (rendered.startsWith(en.review)) {
         let page = rendered;
-        for (let guard = 0; guard < 100 && page.includes(`  ${en.next}`); guard++) {
-          component.handleInput?.('\x1b[B');
+        // Read where the marker sits and move it onto the wanted option instead of guessing: upward from the
+        // first option wraps to the last one, which silently closed the review and lost the remaining pages.
+        const moveTo = (label: string): void => {
+          const lines = page.split('\n');
+          const marker = lines.findIndex(line => line.trimStart().startsWith('\u2192'));
+          // The selected option loses its indent and gains the marker, so match on the label alone.
+          const wanted = lines.findIndex(line => line.includes(label));
+          if (marker < 0 || wanted < 0) throw new Error(`review option not found: ${label}`);
+          for (let step = 0; step < Math.abs(wanted - marker); step++) component.handleInput?.(wanted > marker ? '\x1b[B' : '\x1b[A');
           component.handleInput?.('\r');
-          page = component.render(viewport.width).join('\n');
+        };
+        for (let guard = 0; guard < 5000 && page.includes(en.next); guard++) {
+          moveTo(en.next);
+          const next = component.render(viewport.width).join('\n');
+          if (next === page) throw new Error('review navigation did not advance');
+          page = next;
           screens.push(page);
         }
-        component.handleInput?.('\r');
+        moveTo(en.close);
         return;
       }
       if (rendered.includes(en.working) || rendered.includes(en.installing) || rendered.includes(en.reading)) return;
@@ -496,7 +508,8 @@ test('full import flow renders within 120x40', async () => {
     assert.ok(ui.screens.some(screen => screen.includes(en.stageTitle)));
     for (const screen of ui.screens) {
       const lines = screen.split('\n');
-      assert.ok(lines.length <= 40, JSON.stringify(lines));
+      // Screens are rendered by Pi inside its frame, so the component never fills the whole terminal.
+      assert.ok(lines.length <= 40 - 6, JSON.stringify(lines));
       assert.ok(lines.every(line => line.length <= 120), JSON.stringify(lines));
     }
   });

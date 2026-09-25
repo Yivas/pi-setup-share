@@ -14,7 +14,9 @@ for (const [width, height] of [[80, 24], [120, 40]] as const) {
     const components = [reviewComponent(host, theme, () => {}, items.map(item => item.label)), selectionComponent(host, theme, () => {}, items)];
     for (const component of components) {
       const lines = component.render(width);
-      assert.ok(lines.length <= height);
+      // Pi keeps part of the terminal for its own header, input, status and footer, so the component must
+      // leave room instead of using every row: with a long list it used to grow upwards over that frame.
+      assert.ok(lines.length <= height - 6, `rendered ${lines.length} lines for ${height} rows`);
       assert.ok(lines.every(line => visibleWidth(line) <= width));
       component.handleInput?.('\x1b[B');
       component.handleInput?.('\r');
