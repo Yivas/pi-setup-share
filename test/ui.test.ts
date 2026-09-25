@@ -66,7 +66,7 @@ const isolatedInstaller: PackageInstallerFactory = packageStore => ({
   getInstalledPath: () => join(packageStore, 'installed'),
 });
 async function conflictFixture(root: string, agent: string): Promise<string> {
-  await writeFile(join(agent, 'settings.json'), JSON.stringify({ quietStartup: false, prompts: false, packages: [{ source: 'npm:example@9.9.9' }] }));
+  await writeFile(join(agent, 'settings.json'), JSON.stringify({ quietStartup: false, hideThinkingBlock: true, packages: [{ source: 'npm:example@9.9.9' }] }));
   await writeFile(join(agent, 'mcp.json'), JSON.stringify({ mcpServers: { example: { command: 'node', args: ['existing.js'] } } }));
   const source = join(root, 'conflicts.json');
   await writeFile(source, JSON.stringify({ format: 'pi-setup-share', version: 1,
@@ -444,7 +444,7 @@ test('activation coverage report distinguishes preserved, replaced and skipped i
     assert.match(screens, /\/ skip/);
     const settings = JSON.parse(await readFile(join(agent, 'settings.json'), 'utf8'));
     assert.equal(settings.quietStartup, false);
-    assert.equal(settings.prompts, false);
+    assert.equal(settings.hideThinkingBlock, true);
     assert.deepEqual(settings.packages, [{ source: 'npm:example@9.9.9' }]);
     const mcp = JSON.parse(await readFile(join(agent, 'mcp.json'), 'utf8'));
     assert.deepEqual(mcp.mcpServers.example.args, ['other.js']);
