@@ -20,6 +20,17 @@ function listTheme(theme: Theme) {
 // Pi's frame and the beginning of the review scrolled out of sight in a real terminal.
 const REVIEW_RESERVE = 12;
 
+// Rows a component may use, leaving the frame Pi keeps for its own header, input, status and footer. Every
+// component clamps its final render to this budget, so a very short terminal shows less instead of drawing
+// over Pi's frame.
+function usableRows(tui: TUI): number {
+  return Math.max(1, tui.terminal.rows - 6);
+}
+
+function withinBudget(lines: readonly string[], budget: number): string[] {
+  return lines.length <= budget ? [...lines] : lines.slice(0, budget);
+}
+
 export function reviewComponent(tui: TUI, theme: Theme, done: () => void, lines: readonly string[]): Component {
   let page = 0;
   let pages = 1;
@@ -42,15 +53,17 @@ export function reviewComponent(tui: TUI, theme: Theme, done: () => void, lines:
   let choices = navigation();
   return {
     render(width) {
-      const rows = Math.max(1, tui.terminal.rows - REVIEW_RESERVE);
+      const budget = usableRows(tui);
+      const navigationLines = choices.render(width).length;
+      const rows = Math.max(1, Math.min(tui.terminal.rows - REVIEW_RESERVE, budget - 3 - navigationLines));
       const body = text.render(width);
       const previousPages = pages;
       const previousPage = page;
       pages = Math.max(1, Math.ceil(body.length / rows));
       page = Math.min(page, pages - 1);
       if (pages !== previousPages || page !== previousPage) choices = navigation(choices.getSelectedItem()?.value);
-      return [truncateToWidth(theme.fg('accent', `${en.review} (${page + 1}/${pages})`), width),
-        ...body.slice(page * rows, (page + 1) * rows), '', ...choices.render(width), truncateToWidth(en.pageHelp, width)];
+      return withinBudget([truncateToWidth(theme.fg('accent', `${en.review} (${page + 1}/${pages})`), width),
+        ...body.slice(page * rows, (page + 1) * rows), '', ...choices.render(width), truncateToWidth(en.pageHelp, width)], budget);
     },
     handleInput(data) { choices.handleInput(data); tui.requestRender(); },
     invalidate() { text.invalidate(); choices.invalidate(); },
@@ -144,7 +157,7 @@ export function selectionComponent(
   function rebuild(index = 0): void {
     const controls = selectAllLabel && items.length ? [{ value: selectAllValue, label: safeDisplay(selectAllLabel) }] : [];
     list = new SelectList([...controls, ...items.map(item => ({ value: item.value, label: `${selected.has(item.value) ? '[x]' : '[ ]'} ${safeDisplay(item.label)}` })),
-      { value: continueValue, label: en.continue }], Math.min(12, Math.max(2, tui.terminal.rows - 10)), listTheme(theme));
+      { value: continueValue, label: en.continue }], Math.max(1, Math.min(12, usableRows(tui) - 2)), listTheme(theme));
     list.setSelectedIndex(index);
     list.onCancel = () => done(undefined);
     list.onSelect = item => {
@@ -160,7 +173,7 @@ export function selectionComponent(
   }
   rebuild();
   return {
-    render(width) { return [truncateToWidth(theme.fg('accent', en.selection), width), ...list.render(width), truncateToWidth(en.selectionHelp, width)]; },
+    render(width) { return withinBudget([truncateToWidth(theme.fg('accent', en.selection), width), ...list.render(width), truncateToWidth(en.selectionHelp, width)], usableRows(tui)); },
     handleInput(data) {
       if (matchesKey(data, 'space')) {
         const item = list.getSelectedItem();
@@ -185,7 +198,7 @@ export async function confirmStep(ctx: ExtensionCommandContext, title: string, w
     choices.onSelect = item => done(item.value === 'confirm');
     choices.onCancel = () => done(false);
     return {
-      render(width) { return [truncateToWidth(theme.fg('accent', title), width), ...text.render(width), ...choices.render(width), truncateToWidth(en.confirmHelp, width)]; },
+      render(width) { return withinBudget([truncateToWidth(theme.fg('accent', title), width), ...text.render(width), ...choices.render(width), truncateToWidth(en.confirmHelp, width)], usableRows(tui)); },
       handleInput(data) { choices.handleInput(data); tui.requestRender(); },
       invalidate() { text.invalidate(); choices.invalidate(); },
     };
@@ -201,7 +214,7 @@ export async function runOperation<T>(ctx: ExtensionCommandContext, title: strin
     return {
       render(width) {
         const progress = tracker ? progressLines(tracker.snapshot(), width).map(line => truncateToWidth(line, width)) : [];
-        return [...loader.render(width), ...progress, ...new Text(en.operationHelp, 1, 0).render(width)];
+        return withinBudget([...loader.render(width), ...progress, ...new Text(en.operationHelp, 1, 0).render(width)], usableRows(tui));
       },
       handleInput(data) { loader.handleInput(data); },
       invalidate() { loader.invalidate(); },

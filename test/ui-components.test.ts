@@ -2,10 +2,33 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-agent';
 import { visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
-import { reviewComponent, runOperation, safeDisplay, selectionComponent } from '../src/ui-components.ts';
+import { confirmStep, reviewComponent, runOperation, safeDisplay, selectionComponent } from '../src/ui-components.ts';
 
 const theme = { fg: (_color: string, text: string) => text } as unknown as Theme;
 const tui = (rows: number) => ({ terminal: { rows }, requestRender() {} }) as unknown as TUI;
+
+for (const height of [8, 12] as const) {
+  test(`components stay inside a ${height}-row terminal`, () => {
+    const host = tui(height);
+    const items = Array.from({ length: 40 }, (_, index) => ({ value: String(index), label: `${index}: ${'long label '.repeat(10)}` }));
+    const review = reviewComponent(host, theme, () => {}, items.map(item => item.label));
+    const selection = selectionComponent(host, theme, () => {}, items);
+    for (const component of [review, selection]) {
+      const lines = component.render(80);
+      // The budget shrinks with the terminal; below it nothing may be drawn over Pi's own frame.
+      assert.ok(lines.length <= Math.max(1, height - 6), `rendered ${lines.length} lines for ${height} rows`);
+      assert.ok(lines.every(line => visibleWidth(line) <= 80));
+    }
+    let confirmation: Component | undefined;
+    const ctx = { ui: { custom: (factory: (host: TUI, theme: Theme, keys: unknown, done: () => void) => Component) => {
+      confirmation = factory(host, theme, {}, () => {});
+      return Promise.resolve(undefined);
+    } } } as unknown as ExtensionCommandContext;
+    void confirmStep(ctx, 'Synthetic title', 'Synthetic warning that wraps over several lines '.repeat(4));
+    const lines = confirmation?.render(80) ?? [];
+    assert.ok(lines.length <= Math.max(1, height - 6), `confirmation rendered ${lines.length} lines for ${height} rows`);
+  });
+}
 
 for (const [width, height] of [[80, 24], [120, 40]] as const) {
   test(`native review and selection fit ${width}x${height}`, () => {
