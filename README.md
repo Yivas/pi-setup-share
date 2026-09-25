@@ -37,7 +37,7 @@ npm run check
 
 ## Use in Pi
 
-Use Pi 0.85.0. Version 0.4.1 adds per-item conflict decisions, progress reporting and a review layout that keeps the terminal frame visible. To use a development checkout, load `./src/index.ts` from this directory in an isolated Pi instance. To install the versioned package:
+Use Pi 0.85.0 or newer (checked to 0.87.1). Version 0.4.1 adds per-item conflict decisions, progress reporting and a review layout that keeps the terminal frame visible. To use a development checkout, load `./src/index.ts` from this directory in an isolated Pi instance. To install the versioned package:
 
 ```sh
 pi install npm:pi-setup-share@0.4.1

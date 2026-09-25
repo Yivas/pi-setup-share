@@ -22,6 +22,10 @@
 
 ## Unreleased
 
+### Changed
+
+- The documented requirement says Pi 0.85.0 or newer: the extension was built and tested against 0.85.0 and verified by hand on 0.87.1.
+
 ## 0.3.0 — 2026-09-23
 
 ### Added
