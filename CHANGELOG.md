@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-26
 
 ### Changed
 
 - One resource may now use the whole 24 MiB of decoded content instead of 4 MiB. Skills can ship a single large asset, and a setup whose only oversized file was one of those could not be exported. The receiver stages it with the same bound, and the serialized JSON bound still rejects content that escapes badly.
+- Export measures each resource's serialized size without building its JSON first, so a large file of control characters is rejected without a temporary copy six times its size.
+
+### Compatibility
+
+- The profile format is unchanged (v2). A receiver older than 0.6.0 rejects a profile with a file above 4 MiB; update both computers before sharing one.
 
 ## 0.5.0 — 2026-09-26
 
