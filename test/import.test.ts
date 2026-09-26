@@ -94,7 +94,10 @@ test('a profile at the resource limit stages and activates, agents in nested dir
     // Every layer below the profile (transaction paths, journal entries, agent walk) must accept what the profile
     // itself accepts; a lower hidden bound would export fine and then fail after the user consented.
     const half = PROFILE_LIMITS.resources / 2;
-    const agents = Array.from({ length: half }, (_, index) => ({ kind: 'agent', path: `team-${index % 8}/nested/agent-${index}.md`, encoding: 'utf8', content: `---\nname: synthetic-${index}\ndescription: Synthetic agent\n---\nSynthetic` }));
+    // A root agent makes the walk start at the agents root, and one directory pair per agent pushes the walk past
+    // the old fixed bound of 1024 entries.
+    const agent = (path: string, index: number) => ({ kind: 'agent', path, encoding: 'utf8', content: `---\nname: synthetic-${index}\ndescription: Synthetic agent\n---\nSynthetic` });
+    const agents = [agent('root.md', 0), ...Array.from({ length: half - 1 }, (_, index) => agent(`team/agent-${index}/deep/agent.md`, index + 1))];
     const prompts = Array.from({ length: half }, (_, index) => ({ kind: 'prompt', path: `prompts/prompt-${index}.md`, encoding: 'utf8', content: 'Synthetic prompt' }));
     const input = { ...empty, resources: [...agents, ...prompts], entrypoints: { agent: agents.map(entry => entry.path), prompt: prompts.map(entry => entry.path) } };
     const stage = await previewImport(store, input);
@@ -103,6 +106,8 @@ test('a profile at the resource limit stages and activates, agents in nested dir
     const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
     assert.equal(settings.prompts.length, half);
     assert.equal(settings.packages.length, 1);
+    await restoreImport(store, stage.importId, true);
+    assert.equal((await store.read('settings.json')).bytes, null);
   });
 });
 
