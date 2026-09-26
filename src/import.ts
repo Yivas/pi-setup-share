@@ -132,6 +132,11 @@ function validateAgentDiscovery(profile: ResourceProfile): void {
 async function verifyAgentFiles(store: FileStore, profile: ResourceProfile, importId: string): Promise<void> {
   validateAgentDiscovery(profile);
   const selected = new Set(profile.entrypoints?.agent ?? []);
+  // The staged agents tree holds the profile's agent files and their parent directories. The walk is bounded by
+  // that count plus a fixed allowance for stray non-Markdown files, so a legitimate maximum profile always fits.
+  const agentPaths = profile.resources.filter(resource => resource.kind === 'agent').map(resource => resource.path);
+  const agentDirectoryPaths = new Set(agentPaths.flatMap(path => path.split('/').slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join('/'))));
+  const entryLimit = agentPaths.length + agentDirectoryPaths.size + 1024;
   let entries = 0;
   async function visit(relative: string): Promise<void> {
     const path = join(store.root, basePath(importId), 'agents-package', 'agents', relative);
@@ -140,7 +145,7 @@ async function verifyAgentFiles(store: FileStore, profile: ResourceProfile, impo
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError('unsafe-path');
       const directory = await opendir(path);
       for await (const entry of directory) {
-        if (++entries > 1024) throw new StorageError('limit-exceeded');
+        if (++entries > entryLimit) throw new StorageError('limit-exceeded');
         const child = relative ? `${relative}/${entry.name}` : entry.name;
         if (Buffer.byteLength(child) > PROFILE_LIMITS.pathBytes) throw new StorageError('unsafe-path');
         if (entry.isDirectory()) await visit(child);

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { activateImport, applyImport, previewActivation, previewImport, restoreImport, type StagingPlan } from '../src/import.ts';
+import { PROFILE_LIMITS } from '../src/profile.ts';
 import { FileStore, StorageError, type FileSnapshot } from '../src/storage.ts';
 import { recoverChanges } from '../src/transaction.ts';
 
@@ -85,6 +86,23 @@ test('staging copies explicit resources without modifying global configuration o
     assert.equal(manifest.state, 'staged');
     assert.equal(manifest.stageTransactionId, plan.importId);
     assert.equal((await store.read('mcp.json')).bytes, null);
+  });
+});
+
+test('a profile at the resource limit stages and activates, agents in nested directories included', async () => {
+  await fixture(async (root, store) => {
+    // Every layer below the profile (transaction paths, journal entries, agent walk) must accept what the profile
+    // itself accepts; a lower hidden bound would export fine and then fail after the user consented.
+    const half = PROFILE_LIMITS.resources / 2;
+    const agents = Array.from({ length: half }, (_, index) => ({ kind: 'agent', path: `team-${index % 8}/nested/agent-${index}.md`, encoding: 'utf8', content: `---\nname: synthetic-${index}\ndescription: Synthetic agent\n---\nSynthetic` }));
+    const prompts = Array.from({ length: half }, (_, index) => ({ kind: 'prompt', path: `prompts/prompt-${index}.md`, encoding: 'utf8', content: 'Synthetic prompt' }));
+    const input = { ...empty, resources: [...agents, ...prompts], entrypoints: { agent: agents.map(entry => entry.path), prompt: prompts.map(entry => entry.path) } };
+    const stage = await previewImport(store, input);
+    await applyImport(store, stage, true);
+    await activateImport(store, await previewActivation(store, stage.importId), true);
+    const settings = JSON.parse(await readFile(join(root, 'settings.json'), 'utf8'));
+    assert.equal(settings.prompts.length, half);
+    assert.equal(settings.packages.length, 1);
   });
 });
 
@@ -360,7 +378,8 @@ test('agent directory enumeration is bounded even when added files are not Markd
       { kind: 'agent', path: 'main.md', encoding: 'utf8', content: 'Synthetic main' },
     ], entrypoints: { agent: ['main.md'] } });
     await applyImport(store, stage, true);
-    for (let index = 0; index < 1024; index++) await writeFile(join(root, base(stage.importId), `agents-package/agents/extra-${index}.txt`), 'synthetic');
+    // One more stray file than the fixed allowance above the staged entries.
+    for (let index = 0; index < 1025; index++) await writeFile(join(root, base(stage.importId), `agents-package/agents/extra-${index}.txt`), 'synthetic');
     await assert.rejects(previewActivation(store, stage.importId), { code: 'limit-exceeded' });
     assert.equal((await store.read('settings.json')).bytes, null);
   });

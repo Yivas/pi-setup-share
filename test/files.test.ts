@@ -175,10 +175,9 @@ test('offers at most the profile limit of candidates without failing the entire 
   await fixture(async root => {
     await Promise.all(Array.from({ length: PROFILE_LIMITS.resources + 1 }, (_, index) => writeFile(join(root, `extension-${index}.ts`), 'synthetic')));
     const result = await discoverResources(root, 'extension');
-    // The inventory stays bounded and reports truncation. Which bound trips first (candidate count or traversal
-    // visits) is an implementation detail, so the test only pins the guarantee: a bounded list, never an error.
-    assert.ok(result.candidates.length > 0);
-    assert.ok(result.candidates.length <= PROFILE_LIMITS.resources);
+    // One entry over the limit in a single directory: the inventory offers exactly the profile limit and reports
+    // truncation instead of failing.
+    assert.equal(result.candidates.length, PROFILE_LIMITS.resources);
     assert.equal(result.truncated, true);
   });
 });

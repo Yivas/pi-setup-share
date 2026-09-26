@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, opendir, readdir, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseBoundedJson, stringifyBounded } from './json.ts';
+import { PROFILE_LIMITS } from './profile.ts';
 import { digest, FileStore, StorageError, type FileSnapshot } from './storage.ts';
 import { requireDataArray, requireRecord } from './validation.ts';
 
@@ -26,6 +27,12 @@ const journalLimit = 64 * 1024 * 1024;
 // Cumulative bound while inspecting applied history. Kept separate from the transaction bound above so raising
 // the export size never widens how much backup data one inspection may read.
 const appliedHistoryLimit = 32 * 1024 * 1024;
+// Paths one transaction may touch. Staging writes one file per profile resource plus the profile, its manifest and
+// the agents package descriptor, so this derives from the profile limit instead of repeating a number that could
+// fall below it.
+const transactionPathLimit = PROFILE_LIMITS.resources + 16;
+// Bytes one transaction may write: staging stores the serialized profile next to every decoded resource.
+const transactionWriteLimit = PROFILE_LIMITS.jsonBytes + PROFILE_LIMITS.totalBytes + 1024 * 1024;
 
 export function isImportId(id: string): boolean { return typeof id === 'string' && uuid.test(id); }
 
@@ -39,7 +46,7 @@ function allowed(path: string): boolean {
 }
 
 function validatePaths(paths: string[]): void {
-  if (paths.length > 272 || paths.some(path => !allowed(path))) throw new StorageError('invalid-state');
+  if (paths.length > transactionPathLimit || paths.some(path => !allowed(path))) throw new StorageError('invalid-state');
   const folded = paths.map(path => path.toLowerCase().toUpperCase().normalize('NFC'));
   const set = new Set(folded);
   if (set.size !== paths.length || folded.some(path => {
@@ -83,7 +90,7 @@ function decodeJournal(bytes: Buffer | null, id: string): Journal {
   requireRecord(input, ['format', 'version', 'id', 'state', 'appliedCount', 'entries'], 'journal');
   if (input.format !== 'pi-setup-share-journal' || input.version !== 1 || input.id !== id
       || !['applying', 'applied', 'restoring', 'restored', 'rolled-back', 'recovery-required'].includes(input.state as string)) throw new StorageError('invalid-state');
-  requireDataArray(input.entries, 272, 'journal');
+  requireDataArray(input.entries, transactionPathLimit, 'journal');
   if (typeof input.appliedCount !== 'number' || !Number.isSafeInteger(input.appliedCount) || input.appliedCount < 0 || input.appliedCount > input.entries.length) throw new StorageError('invalid-state');
   let total = 0;
   const entries: JournalEntry[] = input.entries.map(value => {
@@ -167,7 +174,7 @@ export async function commitChanges(store: FileStore, changes: readonly FileChan
   const selected = changes.map(change => {
     total += change.before.bytes?.byteLength ?? 0;
     afterTotal += change.bytes.byteLength;
-    if (total > 32 * 1024 * 1024 || afterTotal > journalLimit) throw new StorageError('limit-exceeded');
+    if (total > 32 * 1024 * 1024 || afterTotal > transactionWriteLimit) throw new StorageError('limit-exceeded');
     const before = change.before;
     if (before.bytes === null ? before.hash !== null || before.signature !== null
       : !Buffer.isBuffer(before.bytes) || digest(before.bytes) !== before.hash || typeof before.signature !== 'string') throw new StorageError('invalid-state');
