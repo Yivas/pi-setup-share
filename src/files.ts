@@ -195,10 +195,8 @@ export async function exportResources(
       const separator = index > 0 ? 1 : 0;
       const remaining = PROFILE_LIMITS.jsonBytes - jsonBytes - separator;
       const entryBytes = remaining < 0 ? null : jsonByteLength(resource, remaining);
-      jsonBytes = entryBytes === null ? Infinity : jsonBytes + separator + entryBytes;
-      if (totalBytes > PROFILE_LIMITS.totalBytes || jsonBytes > PROFILE_LIMITS.jsonBytes) {
-        throw new ResourceReadError('limit-exceeded', field);
-      }
+      if (totalBytes > PROFILE_LIMITS.totalBytes || entryBytes === null) throw new ResourceReadError('limit-exceeded', field);
+      jsonBytes += separator + entryBytes;
       output.push(resource);
     }
     checkAbort(signal, field);

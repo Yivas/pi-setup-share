@@ -43,7 +43,7 @@ test('bounds serialized output before composing the oversized JSON string', t =>
   const original = JSON.stringify;
   let calls = 0;
   t.mock.method(JSON, 'stringify', (...args: Parameters<typeof JSON.stringify>) => { calls++; return Reflect.apply(original, JSON, args); });
-  assert.throws(() => serializeProfile({ format: 'pi-setup-share', version: 1, resources }), ProfileError);
+  assert.throws(() => serializeProfile({ format: 'pi-setup-share', version: 1, resources }), (error: unknown) => error instanceof ProfileError && error.code === 'limit-exceeded' && error.field === 'json');
   t.mock.restoreAll();
   assert.equal(calls, 0);
 });
