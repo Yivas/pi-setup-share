@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 — 2026-09-26
+
+### Changed
+
+- Raised the profile limits so a whole installation fits in one export: 1024 resource entries, 4 MiB per file, 24 MiB of decoded content and 48 MiB of serialized JSON (archive accepted up to 49 MiB). Resource discovery stops at the same entry count instead of hiding files a profile could hold. The receiver validates and stages with the same numbers, and the bound on reading applied history stays at 32 MiB so a bigger export never widens how much backup data one inspection may read.
+- Every import layer accepts what the profile accepts: one transaction and its journal now take as many paths as a profile has resources, the bytes one transaction may write cover the profile plus its decoded resources, and the staged agents walk is bounded by what staging wrote. Before this, a profile above roughly 269 resources exported fine and failed staging after consent.
+- The documented requirement says Pi 0.85.0 or newer: the extension was built and tested against 0.85.0 and verified by hand on 0.87.1.
+
+### Compatibility
+
+- The profile format is unchanged (v2). A receiver older than 0.5.0 rejects profiles above its old limits, so update both computers before sharing a large export.
+- Large imports take longer: every write is recorded durably before the next one, so staging 1024 small resources took about half a minute on the test machine.
+
+## 0.4.1 — 2026-09-25
+
+### Fixed
+
+- Long review lists no longer grow upwards over Pi's own frame. The body of a review is sized so the whole component always leaves rows free for the header, input, status and footer; with a long profile summary the beginning of the review used to scroll out of sight in a real terminal. Selection lists, confirmations and operation screens reserve the same margin and clamp their output to it, so a very short terminal shows less instead of drawing over the frame.
+- Package metadata: `repository.url` uses the form npm expects, so publishing no longer rewrites it.
+
 ## 0.4.0 — 2026-09-24
 
 ### Added
@@ -12,23 +32,6 @@
 - Profile reading and writing are unchanged: new exports remain one-entry ZIP archives with a v2 `profile.json`, and v1 ZIP and legacy plain JSON still import. Receivers on 0.2.0 cannot read v2 profiles; update both computers before sharing a new export.
 - Progress reports counts, phases and outcomes only. It never shows paths, values or file contents, and each increment confirms one durable write rather than the completion of the operation: success is announced only after the whole transaction commits.
 - The whole-directory copy machinery (literal transfer) is not part of this release: it has no entry point in the assistant and cannot be enabled. Pi 0.85.0 does not hand an extension a verifiable identity for the root Pi was using, and Windows ACLs cannot be checked from Node, so the mode stays disconnected and documented instead of offered.
-
-## 0.4.1 — 2026-09-25
-
-### Fixed
-
-- Long review lists no longer grow upwards over Pi's own frame. The body of a review is sized so the whole component always leaves rows free for the header, input, status and footer; with a long profile summary the beginning of the review used to scroll out of sight in a real terminal. Selection lists, confirmations and operation screens reserve the same margin and clamp their output to it, so a very short terminal shows less instead of drawing over the frame.
-- Package metadata: `repository.url` uses the form npm expects, so publishing no longer rewrites it.
-
-## Unreleased
-
-### Changed
-
-- Raised the profile limits so a whole installation fits in one export: 1024 resource entries, 4 MiB per file, 24 MiB of decoded content and 48 MiB of serialized JSON (archive accepted up to 49 MiB). Resource discovery stops at the same entry count instead of hiding files a profile could hold. The receiver validates and stages with the same numbers, and the bound on reading applied history stays at 32 MiB so a bigger export never widens how much backup data one inspection may read.
-
-### Changed
-
-- The documented requirement says Pi 0.85.0 or newer: the extension was built and tested against 0.85.0 and verified by hand on 0.87.1.
 
 ## 0.3.0 — 2026-09-23
 
