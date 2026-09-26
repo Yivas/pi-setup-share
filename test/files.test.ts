@@ -101,13 +101,11 @@ test('enforces individual and aggregate decoded limits', async () => {
 
 test('bounds escaped serialized JSON separately from decoded content', async () => {
   await fixture(async root => {
-    const selection = [];
-    for (let index = 0; index < 3; index++) {
-      const path = `file-${index}.txt`;
-      await writeFile(join(root, path), Buffer.alloc(PROFILE_LIMITS.fileBytes));
-      selection.push({ kind: 'prompt' as const, path });
-    }
-    await assert.rejects(exportResources(root, selection), { code: 'limit-exceeded' });
+    // One NUL-filled file fits the decoded bounds exactly, yet each NUL serializes as six bytes and crosses the
+    // JSON bound on its own.
+    assert.ok(PROFILE_LIMITS.fileBytes <= PROFILE_LIMITS.totalBytes && PROFILE_LIMITS.fileBytes * 6 > PROFILE_LIMITS.jsonBytes);
+    await writeFile(join(root, 'zeros.txt'), Buffer.alloc(PROFILE_LIMITS.fileBytes));
+    await assert.rejects(exportResources(root, [{ kind: 'prompt', path: 'zeros.txt' }]), { code: 'limit-exceeded' });
   });
 });
 

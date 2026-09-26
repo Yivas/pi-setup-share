@@ -111,6 +111,15 @@ test('a profile at the resource limit stages and activates, agents in nested dir
   });
 });
 
+test('a single binary resource at the per-file limit stages byte for byte', async () => {
+  await fixture(async (root, store) => {
+    const bytes = Buffer.alloc(PROFILE_LIMITS.fileBytes, 0xff);
+    const stage = await previewImport(store, { ...empty, resources: [{ kind: 'skill', path: 'large/asset.bin', encoding: 'base64', content: bytes.toString('base64') }] });
+    await applyImport(store, stage, true);
+    assert.ok((await readFile(join(root, base(stage.importId), 'resources/skill/large/asset.bin'))).equals(bytes));
+  });
+});
+
 test('plans are copied, store-bound, unforgeable and consumed after application', async () => {
   await fixture(async (root, store) => {
     const input = structuredClone(profile);

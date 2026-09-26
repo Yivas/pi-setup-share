@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- One resource may now use the whole 24 MiB of decoded content instead of 4 MiB. Skills can ship a single large asset, and a setup whose only oversized file was one of those could not be exported. The receiver stages it with the same bound, and the serialized JSON bound still rejects content that escapes badly.
+
 ## 0.5.0 — 2026-09-26
 
 ### Changed
