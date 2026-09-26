@@ -4,13 +4,17 @@ import { ProfileError, requireDataArray, requireDataRecord } from './validation.
 // profile travels and is staged as a single stored file, so these bounds cannot be lower than the profile itself.
 const MAX_SERIALIZED_BYTES = 64 * 1024 * 1024;
 
-export function stringifyBounded(value: unknown, limit: number, pretty = true): string {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SERIALIZED_BYTES) throw new ProfileError('limit-exceeded', 'json');
-  let size = 1; // Final newline.
+const overLimit = Symbol('over-limit');
+
+// Counts the UTF-8 bytes JSON.stringify would produce, without composing the string, and returns null as soon as
+// the count passes `limit`. Structural bounds (node count, depth, array length) still throw.
+export function jsonByteLength(value: unknown, limit: number, pretty = false): number | null {
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_SERIALIZED_BYTES) throw new ProfileError('limit-exceeded', 'json');
+  let size = 0;
   let nodes = 0;
   const add = (bytes: number): void => {
     size += bytes;
-    if (size > limit) throw new ProfileError('limit-exceeded', 'json');
+    if (size > limit) throw overLimit;
   };
   function quoted(text: string): void {
     add(2);
@@ -45,7 +49,15 @@ export function stringifyBounded(value: unknown, limit: number, pretty = true): 
     }
     if (pretty && entries.length) add(1 + 2 * depth);
   }
-  visit(value, 0);
+  try { visit(value, 0); }
+  catch (error) { if (error === overLimit) return null; throw error; }
+  return size;
+}
+
+export function stringifyBounded(value: unknown, limit: number, pretty = true): string {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SERIALIZED_BYTES) throw new ProfileError('limit-exceeded', 'json');
+  // One byte of the limit is the final newline.
+  if (jsonByteLength(value, limit - 1, pretty) === null) throw new ProfileError('limit-exceeded', 'json');
   return `${JSON.stringify(value, null, pretty ? 2 : undefined)}\n`;
 }
 

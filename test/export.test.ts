@@ -38,7 +38,8 @@ test('allows explicit skill, prompt, theme and agent text entrypoints, but not c
 });
 
 test('bounds serialized output before composing the oversized JSON string', t => {
-  const resources = Array.from({ length: 3 }, (_, index) => ({ kind: 'prompt', path: `${index}.md`, encoding: 'utf8', content: '\0'.repeat(PROFILE_LIMITS.fileBytes) }));
+  // One resource fits every decoded bound, so only the serialized bound can reject it: each NUL escapes to six bytes.
+  const resources = [{ kind: 'prompt', path: '0.md', encoding: 'utf8', content: '\0'.repeat(PROFILE_LIMITS.fileBytes) }];
   const original = JSON.stringify;
   let calls = 0;
   t.mock.method(JSON, 'stringify', (...args: Parameters<typeof JSON.stringify>) => { calls++; return Reflect.apply(original, JSON, args); });

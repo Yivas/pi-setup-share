@@ -2,6 +2,7 @@ import { Buffer, isUtf8 } from 'node:buffer';
 import { constants, type BigIntStats } from 'node:fs';
 import { lstat, open, opendir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { jsonByteLength } from './json.ts';
 import { PROFILE_LIMITS, assertPortableResourceRoot, validateProfile, type ProfileResource, type ResourceKind } from './profile.ts';
 import { ProfileError, requireDataArray, requireRecord } from './validation.ts';
 
@@ -190,7 +191,11 @@ export async function exportResources(
       field = `resources[${index}]`;
       const resource = await readResource(canonicalRoot, rootStat, validated.resources[index] as ProfileResource, field, signal);
       totalBytes += Buffer.byteLength(resource.content, resource.encoding === 'utf8' ? 'utf8' : 'base64');
-      jsonBytes += Buffer.byteLength(JSON.stringify(resource)) + (index > 0 ? 1 : 0);
+      // Measure the serialized entry without composing it: a control-character file escapes to six times its size.
+      const separator = index > 0 ? 1 : 0;
+      const remaining = PROFILE_LIMITS.jsonBytes - jsonBytes - separator;
+      const entryBytes = remaining < 0 ? null : jsonByteLength(resource, remaining);
+      jsonBytes = entryBytes === null ? Infinity : jsonBytes + separator + entryBytes;
       if (totalBytes > PROFILE_LIMITS.totalBytes || jsonBytes > PROFILE_LIMITS.jsonBytes) {
         throw new ResourceReadError('limit-exceeded', field);
       }

@@ -147,10 +147,10 @@ test('requires canonical base64 and lossless UTF-8', () => {
 });
 
 test('limits UTF-8 bytes, not just JavaScript string length', () => {
-  const exactlyOneMiB = 'é'.repeat(PROFILE_LIMITS.fileBytes / 2);
-  assert.equal(parseProfile(JSON.stringify(profile([resource('exact.md', exactlyOneMiB)])))
+  const exactlyFileLimit = 'é'.repeat(PROFILE_LIMITS.fileBytes / 2);
+  assert.equal(parseProfile(JSON.stringify(profile([resource('exact.md', exactlyFileLimit)])))
     .resources.length, 1);
-  rejects(profile([resource('large.md', `${exactlyOneMiB}é`)]), 'limit-exceeded');
+  rejects(profile([resource('large.md', `${exactlyFileLimit}é`)]), 'limit-exceeded');
 });
 
 test('limits decoded base64 size', () => {
